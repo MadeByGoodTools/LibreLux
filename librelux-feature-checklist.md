@@ -1,5 +1,7 @@
 # LibreLux master feature checklist
 
+See `librelux-optics-suite-checklist.md` for the full LibrePure, LibreFX, and LibreFilm capability matrix.
+
 This list combines the modern Lightroom, Lightroom Classic, and DxO-style professional photo workflows into one cohesive web app. It describes product capabilities, not proprietary code or branded algorithms.
 
 Status key: **Done** = implemented and verified; **In progress** = current build batch; **Planned** = sequenced later.
