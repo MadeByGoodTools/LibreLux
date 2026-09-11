@@ -10,7 +10,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Device-local photo library using IndexedDB
 - [x] Done — Restore the last library and selected photo after reopening
 - [x] Done — Grid view, detail view, and persistent filmstrip
-- [x] Done — Library, Develop, Enhance, and Export workspaces
+- [x] Done — Library, Develop, Optics, and Export workspaces
 - [x] Done — Non-destructive per-photo edit instructions
 - [x] Done — Undo, redo, reset, and original/edited comparison
 - [x] Done — Full-resolution JPEG export
