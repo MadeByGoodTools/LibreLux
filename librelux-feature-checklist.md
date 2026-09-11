@@ -72,6 +72,109 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — 25%, 50%, and 100% export sizing
 - [x] Done — Format-aware export filenames and controls
 
+## Batch 3 — 100 completed professional workflow additions
+
+- [x] Done — Folder import from the Library rail
+- [x] Done — Recursive import of nested image folders
+- [x] Done — Preserve relative folder paths on import
+- [x] Done — Import multiple photos in one operation
+- [x] Done — Import from mounted removable media through the folder picker
+- [x] Done — Record the source folder for every imported photo
+- [x] Done — Exact duplicate detection by filename and byte size
+- [x] Done — Dedicated Duplicates catalog view
+- [x] Done — Live duplicate count in the Library rail
+- [x] Done — Grid library view
+- [x] Done — Loupe library view
+- [x] Done — Two-photo Compare library view
+- [x] Done — Multi-photo Survey library view
+- [x] Done — Command/Ctrl-click additive photo selection
+- [x] Done — Shift-click additive photo selection
+- [x] Done — Click-to-replace photo selection
+- [x] Done — Live multi-selection count
+- [x] Done — Visible multi-selection outlines
+- [x] Done — Bulk five-star rating
+- [x] Done — Bulk Pick flagging
+- [x] Done — Bulk Reject flagging
+- [x] Done — Bulk red color labels
+- [x] Done — Bulk yellow color labels
+- [x] Done — Bulk green color labels
+- [x] Done — Bulk blue color labels
+- [x] Done — Bulk purple color labels
+- [x] Done — Minimum one-star filtering
+- [x] Done — Minimum two-star filtering
+- [x] Done — Minimum three-star filtering
+- [x] Done — Minimum four-star filtering
+- [x] Done — Minimum five-star filtering
+- [x] Done — Reset rating filter to Any
+- [x] Done — Show all color labels
+- [x] Done — Filter red labels
+- [x] Done — Filter yellow labels
+- [x] Done — Filter green labels
+- [x] Done — Filter blue labels
+- [x] Done — Filter purple labels
+- [x] Done — Sort by capture/import time
+- [x] Done — Sort by last edit time
+- [x] Done — Search by filename
+- [x] Done — Search by photo title
+- [x] Done — Search by caption
+- [x] Done — Search by creator
+- [x] Done — Search by keyword
+- [x] Done — Search by camera
+- [x] Done — Search by lens
+- [x] Done — Search by location
+- [x] Done — Search by source folder
+- [x] Done — Create a virtual photo copy
+- [x] Done — Virtual copies reuse the original without duplicating its blob
+- [x] Done — Virtual copies keep independent non-destructive adjustments
+- [x] Done — Virtual-copy badges and source information
+- [x] Done — Downloadable local catalog backup
+- [x] Done — Catalog backup includes edit settings
+- [x] Done — Catalog backup includes ratings, flags, labels, and metadata
+- [x] Done — Persistent camera metadata field
+- [x] Done — Persistent lens metadata field
+- [x] Done — Persistent location metadata field
+- [x] Done — Persistent capture date and time field
+- [x] Done — Persistent ISO field
+- [x] Done — Persistent aperture field
+- [x] Done — Persistent shutter-speed field
+- [x] Done — Persistent focal-length field
+- [x] Done — Display source folder in File Info
+- [x] Done — Display last-edit timestamp in File Info
+- [x] Done — Red HSL hue control
+- [x] Done — Red HSL saturation control
+- [x] Done — Red HSL luminance control
+- [x] Done — Orange HSL hue control
+- [x] Done — Orange HSL saturation control
+- [x] Done — Orange HSL luminance control
+- [x] Done — Yellow HSL hue control
+- [x] Done — Yellow HSL saturation control
+- [x] Done — Yellow HSL luminance control
+- [x] Done — Green HSL hue control
+- [x] Done — Green HSL saturation control
+- [x] Done — Green HSL luminance control
+- [x] Done — Aqua HSL hue control
+- [x] Done — Aqua HSL saturation control
+- [x] Done — Aqua HSL luminance control
+- [x] Done — Blue HSL hue control
+- [x] Done — Blue HSL saturation control
+- [x] Done — Blue HSL luminance control
+- [x] Done — Purple HSL hue control
+- [x] Done — Purple HSL saturation control
+- [x] Done — Purple HSL luminance control
+- [x] Done — Magenta HSL hue control
+- [x] Done — Magenta HSL saturation control
+- [x] Done — Magenta HSL luminance control
+- [x] Done — RGB curve shadow control
+- [x] Done — RGB curve midtone control
+- [x] Done — RGB curve highlight control
+- [x] Done — Red-channel shadow, midtone, and highlight curve controls
+- [x] Done — Green-channel shadow, midtone, and highlight curve controls
+- [x] Done — Blue-channel shadow, midtone, and highlight curve controls
+- [x] Done — Live tone-curve preview
+- [x] Done — One-click reset for every curve channel
+- [x] Done — Global color-grading hue and saturation controls
+- [x] Done — Color-grading blending control
+
 ## Library, catalog, and culling
 
 - [ ] Planned — File, folder, and memory-card import
