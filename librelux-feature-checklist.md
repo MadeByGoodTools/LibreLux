@@ -524,3 +524,107 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Horizontal and vertical flips included in finished exports
 - [x] Done — Local mask adjustments included in finished exports
 - [x] Done — Hidden masks excluded from finished exports
+
+
+## Batch 5 — 100 completed organization, recipe, command, and workspace additions
+
+- [x] Done — Persistent album record model
+- [x] Done — Unique ID for every album
+- [x] Done — Creation timestamp for every album
+- [x] Done — Album storage in the local catalog database
+- [x] Done — Automatic album restoration after reopening
+- [x] Done — New-album name field
+- [x] Done — Enter-key album creation
+- [x] Done — Dedicated Create album button
+- [x] Done — Blank album names safely ignored
+- [x] Done — New albums become the active collection
+- [x] Done — Album list in the Library rail
+- [x] Done — Live photo count for every album
+- [x] Done — Clear active-album highlight
+- [x] Done — Active-album library filtering
+- [x] Done — One-click return to All photos
+- [x] Done — Add the selected photo to an album
+- [x] Done — Remove the selected photo from an album
+- [x] Done — Add a multi-photo selection to an album
+- [x] Done — Remove a multi-photo selection when every item is already included
+- [x] Done — Duplicate album membership prevention
+- [x] Done — Single-photo fallback when no multi-selection exists
+- [x] Done — Dedicated delete control for each album
+- [x] Done — Album deletion without deleting photos
+- [x] Done — Automatic return to All photos when deleting the active album
+- [x] Done — Album organization without moving original files
+- [x] Done — Albums retained in creation order
+- [x] Done — Album changes saved immediately
+- [x] Done — Album filters combined with text search
+- [x] Done — Album filters combined with rating and label filters
+- [x] Done — Album filters combined with the selected library sort
+- [x] Done — Preset amount control in the confirmation bar
+- [x] Done — Zero-to-100 preset-strength range
+- [x] Done — Live preset-strength percentage
+- [x] Done — Numeric preset settings interpolated from the current edit
+- [x] Done — Full preset result at 100 percent
+- [x] Done — Non-destructive preview choice at zero percent
+- [x] Done — One strength control shared across Develop and Optics presets
+- [x] Done — Preset outline retained while adjusting strength
+- [x] Done — Apply uses the currently displayed preset amount
+- [x] Done — Responsive preset-strength controls on small screens
+- [x] Done — Reusable export-recipe data model
+- [x] Done — Built-in Web 2048-pixel export recipe
+- [x] Done — Built-in full-resolution Print export recipe
+- [x] Done — Built-in lossless PNG Archive recipe
+- [x] Done — Export recipe browser inside the Export window
+- [x] Done — Selected export recipe highlight
+- [x] Done — Web recipe restores JPEG format and web quality
+- [x] Done — Print recipe restores maximum JPEG quality
+- [x] Done — Archive recipe restores PNG format
+- [x] Done — Recipe application restores file format
+- [x] Done — Recipe application restores quality
+- [x] Done — Recipe application restores percentage scale
+- [x] Done — Recipe application restores long-edge sizing
+- [x] Done — Recipe application restores resolution
+- [x] Done — Recipe application restores output sharpening
+- [x] Done — Recipe application restores filename suffix
+- [x] Done — Recipe application restores watermark text
+- [x] Done — Save Current Settings action
+- [x] Done — Unique ID for every custom export recipe
+- [x] Done — Sequential names for custom export recipes
+- [x] Done — Custom export recipes stored locally
+- [x] Done — Custom export recipes restored after reopening
+- [x] Done — Built-in and custom recipes merged safely
+- [x] Done — Delete control for custom recipes
+- [x] Done — Built-in recipes protected from deletion
+- [x] Done — Commands button in the main toolbar
+- [x] Done — Command or Control K opens Commands
+- [x] Done — Dedicated command-center dialog
+- [x] Done — Dismissible command center
+- [x] Done — Open Library command
+- [x] Done — Open Develop command
+- [x] Done — Open Optics command
+- [x] Done — Open Optics Pure command
+- [x] Done — Open Optics Creative command
+- [x] Done — Open Optics Film command
+- [x] Done — Import Photos command
+- [x] Done — Export Photo command
+- [x] Done — Toggle Before and After command
+- [x] Done — Toggle Left Panel command
+- [x] Done — Toggle Right Panel command
+- [x] Done — Keyboard Shortcuts command
+- [x] Done — Workspace Preferences command
+- [x] Done — Keyboard hints beside commands
+- [x] Done — Question-mark shortcut for help
+- [x] Done — Command center closes after executing a command
+- [x] Done — Preferences button in the main toolbar
+- [x] Done — Workspace Preferences dialog
+- [x] Done — Clear per-computer preference explanation
+- [x] Done — Preferences stored in the local catalog database
+- [x] Done — Preferences restored after reopening
+- [x] Done — High-contrast workspace mode
+- [x] Done — Pressed-state accessibility for preference toggles
+- [x] Done — Reduced-motion workspace mode
+- [x] Done — Animations and transitions disabled in reduced-motion mode
+- [x] Done — Compact panel workspace mode
+- [x] Done — Remembered filmstrip visibility toggle
+- [x] Done — Adjustable library thumbnail size
+- [x] Done — 110-to-260-pixel thumbnail-size range
+- [x] Done — Bulk Sync Edits across the current selection
+- [x] Done — Bulk Reset Edits across the current selection
