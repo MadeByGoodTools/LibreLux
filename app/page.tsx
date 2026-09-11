@@ -1341,14 +1341,24 @@ async function buildLinearRawExport(
     offsetX: photo.adjustments.offsetX,
     offsetY: photo.adjustments.offsetY,
   });
-  let rendered = applyLinearDevelop(ungraded, photo.adjustments);
-  rendered = applyLinearEffectLayers(
-    ungraded,
-    rendered,
-    photo.adjustments,
-    photo.effectStack,
+  const effectLayers = photo.effectStack.filter(
+    (item) => item.enabled && item.opacity > 0,
   );
-  for (const mask of photo.masks.filter((item) => item.visible)) {
+  const masks = photo.masks.filter((item) => item.visible);
+  const canProcessInPlace = effectLayers.length === 0 && masks.length === 0;
+  let rendered = applyLinearDevelop(
+    ungraded,
+    photo.adjustments,
+    canProcessInPlace,
+  );
+  if (effectLayers.length)
+    rendered = applyLinearEffectLayers(
+      ungraded,
+      rendered,
+      photo.adjustments,
+      effectLayers,
+    );
+  for (const mask of masks) {
     rendered = applyLinearMask(
       ungraded,
       rendered,
@@ -1360,7 +1370,7 @@ async function buildLinearRawExport(
   }
   const sharpen =
     outputSharpen === "none" ? 0 : outputSharpen === "screen" ? 18 : 28;
-  return finishLinearRaw(rendered, photo.adjustments, sharpen);
+  return finishLinearRaw(rendered, photo.adjustments, sharpen, true);
 }
 
 function applyComputationalCorrections(

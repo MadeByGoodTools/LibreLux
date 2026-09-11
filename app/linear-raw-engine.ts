@@ -105,6 +105,24 @@ function sampleBilinear(source: LinearRawImage, x: number, y: number, channel: n
 export function resampleLinearRaw(source: LinearRawImage, geometry: LinearGeometry): LinearRawImage {
   const width = Math.max(1, Math.round(geometry.width));
   const height = Math.max(1, Math.round(geometry.height));
+  const identity =
+    width === source.width &&
+    height === source.height &&
+    Math.abs(geometry.sourceX) < 0.001 &&
+    Math.abs(geometry.sourceY) < 0.001 &&
+    Math.abs(geometry.sourceWidth - source.width) < 0.001 &&
+    Math.abs(geometry.sourceHeight - source.height) < 0.001 &&
+    Math.abs(geometry.rotation ?? 0) < 0.001 &&
+    (geometry.flipX ?? 1) === 1 &&
+    (geometry.flipY ?? 1) === 1 &&
+    Math.abs(geometry.perspectiveH ?? 0) < 0.001 &&
+    Math.abs(geometry.perspectiveV ?? 0) < 0.001 &&
+    Math.abs((geometry.perspectiveScale ?? 100) - 100) < 0.001 &&
+    Math.abs(geometry.distortion ?? 0) < 0.001 &&
+    Math.abs(geometry.anamorphic ?? 0) < 0.001 &&
+    Math.abs(geometry.offsetX ?? 0) < 0.001 &&
+    Math.abs(geometry.offsetY ?? 0) < 0.001;
+  if (identity) return source;
   const output = new Float32Array(width * height * 3);
   const radians = -((geometry.rotation ?? 0) * Math.PI) / 180;
   const cosine = Math.cos(radians);
@@ -264,8 +282,12 @@ function gradePixel(rgb: number[], a: LinearDevelopAdjustments, x: number, y: nu
 }
 
 /** Apply tone and colour operations in 32-bit float scene-linear space. */
-export function applyLinearDevelop(source: LinearRawImage, adjustments: LinearDevelopAdjustments): LinearRawImage {
-  const data = new Float32Array(source.data.length);
+export function applyLinearDevelop(
+  source: LinearRawImage,
+  adjustments: LinearDevelopAdjustments,
+  inPlace = false,
+): LinearRawImage {
+  const data = inPlace ? source.data : new Float32Array(source.data.length);
   for (let pixel = 0; pixel < source.width * source.height; pixel++) {
     const offset = pixel * 3;
     const [r, g, b] = gradePixel(
@@ -353,7 +375,12 @@ export function applyLinearMask(
 }
 
 /** Deterministic floating-point output sharpening and grain. */
-export function finishLinearRaw(source: LinearRawImage, adjustments: LinearDevelopAdjustments, outputSharpen = 0) {
+export function finishLinearRaw(
+  source: LinearRawImage,
+  adjustments: LinearDevelopAdjustments,
+  outputSharpen = 0,
+  inPlace = false,
+) {
   const amount = Math.max(
     0,
     ((adjustments.sharpness ?? 0) +
@@ -368,7 +395,7 @@ export function finishLinearRaw(source: LinearRawImage, adjustments: LinearDevel
       (adjustments.colorNoise ?? 0) * 0.3) /
       180,
   );
-  const output = new Float32Array(source.data);
+  const output = inPlace ? source.data : new Float32Array(source.data);
   if (amount || noiseReduction) {
     for (let y = 1; y < source.height - 1; y++) {
       for (let x = 1; x < source.width - 1; x++) {
