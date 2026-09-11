@@ -23,6 +23,7 @@ import {
   Plus,
   RotateCcw,
   RotateCw,
+  RefreshCw,
   Search,
   Settings2,
   SlidersHorizontal,
@@ -39,6 +40,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import * as exifr from "exifr";
 import {
   Dialog,
   DialogContent,
@@ -50,6 +52,7 @@ import {
 
 type Workspace = "library" | "develop" | "enhance";
 type OpticsMode = "pure" | "creative" | "film";
+type ColorSpace = "srgb" | "display-p3" | "adobe-rgb" | "prophoto-rgb";
 type Label = "none" | "red" | "yellow" | "green" | "blue" | "purple";
 type ColorBand =
   | "red"
@@ -179,6 +182,13 @@ type Adjustments = {
   flipX: number;
   flipY: number;
   cropRatio: number;
+  cropTop: number;
+  cropRight: number;
+  cropBottom: number;
+  cropLeft: number;
+  cropConstrain: number;
+  boundaryFill: number;
+  anamorphic: number;
   shadowHue: number;
   shadowSaturation: number;
   midtoneHue: number;
@@ -223,6 +233,14 @@ type PhotoMetadata = {
   aperture: string;
   shutter: string;
   focalLength: string;
+  latitude: number | null;
+  longitude: number | null;
+};
+type CullScores = {
+  focus: number;
+  exposure: number;
+  faces: number;
+  similarity: number;
 };
 type PhotoRecord = {
   id: string;
@@ -242,13 +260,26 @@ type PhotoRecord = {
   metadata: PhotoMetadata;
   masks: MaskRecord[];
   retouchSpots: RetouchSpot[];
+  perceptualHash: string;
+  cull: CullScores;
+  stackId: string | null;
+  missing: boolean;
+  processVersion: "2026" | "2025";
+  previewBlob: Blob | null;
 };
-type RuntimePhoto = PhotoRecord & { url: string };
+type RuntimePhoto = PhotoRecord & { url: string; previewUrl: string };
 type PresetChoice = {
   id: string;
   name: string;
   settings: Partial<Adjustments>;
 } | null;
+type UserPreset = {
+  id: string;
+  name: string;
+  group: string;
+  settings: Partial<Adjustments>;
+  createdAt: number;
+};
 type DirectoryPermissionState =
   | "ready"
   | "needs-permission"
@@ -259,6 +290,10 @@ type AlbumRecord = {
   name: string;
   photoIds: string[];
   createdAt: number;
+  kind: "album" | "set" | "smart" | "quick";
+  parentId: string | null;
+  rule: "five-stars" | "flagged" | "edited" | "people" | null;
+  target: boolean;
 };
 type ExportRecipe = {
   id: string;
@@ -274,12 +309,16 @@ type ExportRecipe = {
 };
 
 interface WritableFileHandle {
+  kind?: "file";
+  name?: string;
+  getFile?: () => Promise<File>;
   createWritable: () => Promise<{
     write: (data: Blob) => Promise<void>;
     close: () => Promise<void>;
   }>;
 }
 interface StoredDirectoryHandle {
+  kind?: "directory";
   name: string;
   getFileHandle: (
     name: string,
@@ -291,6 +330,13 @@ interface StoredDirectoryHandle {
   requestPermission?: (options: {
     mode: "readwrite";
   }) => Promise<PermissionState>;
+  values?: () => AsyncIterableIterator<
+    | WritableFileHandle
+    | {
+        kind: "directory";
+        name: string;
+      }
+  >;
 }
 
 declare global {
@@ -408,6 +454,13 @@ const defaults: Adjustments = {
   flipX: 1,
   flipY: 1,
   cropRatio: 0,
+  cropTop: 0,
+  cropRight: 0,
+  cropBottom: 0,
+  cropLeft: 0,
+  cropConstrain: 1,
+  boundaryFill: 0,
+  anamorphic: 0,
   shadowHue: 220,
   shadowSaturation: 0,
   midtoneHue: 35,
@@ -452,6 +505,8 @@ const emptyMetadata: PhotoMetadata = {
   aperture: "",
   shutter: "",
   focalLength: "",
+  latitude: null,
+  longitude: null,
 };
 const presets = [
   {
@@ -615,6 +670,31 @@ const filmLooks = [
     },
   },
   {
+    name: "Slide Vivid",
+    era: "1990s",
+    tone: "#286a85",
+    settings: {
+      temperature: -3,
+      contrast: 34,
+      highlights: -18,
+      saturation: 28,
+      grain: 7,
+    },
+  },
+  {
+    name: "Negative Soft",
+    era: "1980s",
+    tone: "#c89578",
+    settings: {
+      temperature: 10,
+      tint: -4,
+      contrast: -16,
+      shadows: 18,
+      fade: 13,
+      grain: 15,
+    },
+  },
+  {
     name: "Noir 3200",
     era: "1980s",
     tone: "#55575b",
@@ -716,13 +796,20 @@ async function readPhotos(): Promise<PhotoRecord[]> {
     r.onerror = () => reject(r.error);
   });
 }
-async function savePhoto(photo: PhotoRecord) {
+async function savePhoto(photo: PhotoRecord | RuntimePhoto) {
   const db = await openDb();
+  const {
+    url: _url,
+    previewUrl: _previewUrl,
+    ...stored
+  } = photo as RuntimePhoto;
+  void _url;
+  void _previewUrl;
   return new Promise<void>((resolve, reject) => {
     const r = db
       .transaction("photos", "readwrite")
       .objectStore("photos")
-      .put(photo);
+      .put(stored);
     r.onsuccess = () => resolve();
     r.onerror = () => reject(r.error);
   });
@@ -789,7 +876,8 @@ function escapeXml(value: string) {
       })[character] ?? character,
   );
 }
-function cssFilter(a: Adjustments) {
+function cssFilter(a: Adjustments, processVersion: "2026" | "2025" = "2026") {
+  const legacy = processVersion === "2025";
   const intensity = a.filmIntensity / 100;
   const hsl = Object.values(a.hsl ?? defaultHsl);
   const hslHue = hsl.reduce((n, v) => n + v.hue, 0) / 80;
@@ -830,8 +918,8 @@ function cssFilter(a: Adjustments) {
     0.18,
     1 +
       (a.contrast * intensity) / 100 +
-      a.clarity / 250 +
-      a.dehaze / 320 +
+      a.clarity / (legacy ? 310 : 250) +
+      a.dehaze / (legacy ? 390 : 320) +
       a.sharpness / 900 +
       a.lensSharpness / 1000 -
       a.fade / 260,
@@ -950,15 +1038,136 @@ async function analyzePhoto(url: string) {
     blue: blue / Math.max(1, count),
   };
 }
+async function analyzeImportFile(
+  file: File,
+): Promise<{ perceptualHash: string; cull: CullScores }> {
+  const url = URL.createObjectURL(file);
+  try {
+    const { canvas, pixels } = await readImagePixels(url, 96);
+    const grayscale: number[] = [];
+    for (let i = 0; i < pixels.data.length; i += 4)
+      grayscale.push(
+        0.2126 * pixels.data[i] +
+          0.7152 * pixels.data[i + 1] +
+          0.0722 * pixels.data[i + 2],
+      );
+    let focus = 0,
+      exposure = 0,
+      count = 0;
+    for (let y = 1; y < canvas.height - 1; y++)
+      for (let x = 1; x < canvas.width - 1; x++) {
+        const index = y * canvas.width + x;
+        const laplacian = Math.abs(
+          grayscale[index - 1] +
+            grayscale[index + 1] +
+            grayscale[index - canvas.width] +
+            grayscale[index + canvas.width] -
+            4 * grayscale[index],
+        );
+        focus += laplacian;
+        exposure +=
+          100 - Math.min(100, Math.abs(grayscale[index] - 128) / 1.28);
+        count++;
+      }
+    const hashCanvas = document.createElement("canvas");
+    hashCanvas.width = 9;
+    hashCanvas.height = 8;
+    const context = hashCanvas.getContext("2d", { willReadFrequently: true });
+    let hash = "";
+    if (context) {
+      context.drawImage(canvas, 0, 0, 9, 8);
+      const data = context.getImageData(0, 0, 9, 8).data;
+      for (let y = 0; y < 8; y++) {
+        let byte = 0;
+        for (let x = 0; x < 8; x++) {
+          const left = (y * 9 + x) * 4,
+            right = left + 4;
+          const l = data[left] + data[left + 1] + data[left + 2],
+            r = data[right] + data[right + 1] + data[right + 2];
+          if (l > r) byte |= 1 << x;
+        }
+        hash += byte.toString(16).padStart(2, "0");
+      }
+    }
+    let faces = 0;
+    const Detector = (
+      window as unknown as {
+        FaceDetector?: new (options?: {
+          fastMode?: boolean;
+          maxDetectedFaces?: number;
+        }) => { detect: (source: CanvasImageSource) => Promise<unknown[]> };
+      }
+    ).FaceDetector;
+    if (Detector) {
+      try {
+        faces = (
+          await new Detector({ fastMode: true, maxDetectedFaces: 12 }).detect(
+            canvas,
+          )
+        ).length;
+      } catch {
+        faces = 0;
+      }
+    }
+    return {
+      perceptualHash: hash,
+      cull: {
+        focus: Math.min(100, (focus / Math.max(1, count)) * 4),
+        exposure: exposure / Math.max(1, count),
+        faces,
+        similarity: 0,
+      },
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+async function createSmartPreview(file: Blob): Promise<Blob | null> {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const memory = (navigator as Navigator & { deviceMemory?: number })
+      .deviceMemory;
+    const maxEdge = memory && memory <= 4 ? 1200 : 2000;
+    const scale = Math.min(
+      1,
+      maxEdge / Math.max(image.naturalWidth, image.naturalHeight),
+    );
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    canvas
+      .getContext("2d")
+      ?.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.82),
+    );
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 function Histogram({
   photo,
   showClipping,
   onToggleClipping,
+  onToneChange,
 }: {
   photo?: RuntimePhoto;
   showClipping: boolean;
   onToggleClipping: () => void;
+  onToneChange?: (
+    key: "blacks" | "shadows" | "highlights" | "whites",
+    delta: number,
+  ) => void;
 }) {
+  const drag = useRef<{
+    x: number;
+    key: "blacks" | "shadows" | "highlights" | "whites";
+  } | null>(null);
   const [data, setData] = useState({
     r: Array(32).fill(0) as number[],
     g: Array(32).fill(0) as number[],
@@ -1007,7 +1216,44 @@ function Histogram({
       .join(" ");
   return (
     <div className="histogram" aria-label="RGB histogram">
-      <svg viewBox="0 0 104 66" preserveAspectRatio="none">
+      <svg
+        viewBox="0 0 104 66"
+        preserveAspectRatio="none"
+        className={onToneChange ? "tone-draggable" : ""}
+        onPointerDown={(event) => {
+          if (!onToneChange) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const fraction = (event.clientX - rect.left) / rect.width;
+          drag.current = {
+            x: event.clientX,
+            key:
+              fraction < 0.25
+                ? "blacks"
+                : fraction < 0.5
+                  ? "shadows"
+                  : fraction < 0.75
+                    ? "highlights"
+                    : "whites",
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (
+            !drag.current ||
+            !onToneChange ||
+            !event.currentTarget.hasPointerCapture(event.pointerId)
+          )
+            return;
+          const delta = (event.clientX - drag.current.x) * 0.8;
+          if (Math.abs(delta) >= 1) {
+            onToneChange(drag.current.key, delta);
+            drag.current.x = event.clientX;
+          }
+        }}
+        onPointerUp={() => {
+          drag.current = null;
+        }}
+      >
         <polygon
           points={`0,64 ${points(data.l)} 104,64`}
           fill="rgba(214,230,211,.22)"
@@ -1066,6 +1312,47 @@ function Histogram({
     </div>
   );
 }
+function GamutWarningOverlay({ photo }: { photo: RuntimePhoto }) {
+  const [mask, setMask] = useState("");
+  useEffect(() => {
+    let live = true;
+    readImagePixels(photo.url, 420)
+      .then(({ canvas, pixels }) => {
+        const context = canvas.getContext("2d");
+        if (!context) return;
+        const output = context.createImageData(canvas.width, canvas.height);
+        for (let i = 0; i < pixels.data.length; i += 4) {
+          const r = pixels.data[i],
+            g = pixels.data[i + 1],
+            b = pixels.data[i + 2];
+          const clipped =
+            Math.max(r, g, b) > 247 ||
+            Math.min(r, g, b) < 7 ||
+            Math.max(r, g, b) - Math.min(r, g, b) > 238;
+          if (clipped) {
+            output.data[i] = 255;
+            output.data[i + 1] = 38;
+            output.data[i + 2] = 190;
+            output.data[i + 3] = 190;
+          }
+        }
+        context.putImageData(output, 0, 0);
+        if (live) setMask(canvas.toDataURL("image/png"));
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [photo]);
+  return mask ? (
+    <img
+      className="gamut-warning-overlay"
+      src={mask}
+      alt="Out-of-gamut warning overlay"
+    />
+  ) : null;
+}
+
 function ToolButton({
   label,
   children,
@@ -1153,20 +1440,26 @@ function Panel({
 }
 
 export default function Home() {
+  const deviceMemory =
+    typeof navigator === "undefined"
+      ? 4
+      : ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ??
+        4);
   const [workspace, setWorkspace] = useState<Workspace>("develop");
   const [opticsMode, setOpticsMode] = useState<OpticsMode>("pure");
   const [photos, setPhotos] = useState<RuntimePhoto[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
+  const [folderFilter, setFolderFilter] = useState<string | null>(null);
   const [filter, setFilter] = useState<
-    "all" | "flagged" | "rated" | "edited" | "rejected" | "duplicates"
+    "all" | "flagged" | "rated" | "edited" | "rejected" | "duplicates" | "best"
   >("all");
   const [sort, setSort] = useState<
     "recent" | "edited" | "name" | "rating" | "size"
   >("recent");
   const [libraryView, setLibraryView] = useState<
-    "grid" | "loupe" | "compare" | "survey"
+    "grid" | "loupe" | "compare" | "survey" | "people" | "map"
   >("grid");
   const [minRating, setMinRating] = useState(0);
   const [labelFilter, setLabelFilter] = useState<Label>("none");
@@ -1188,12 +1481,28 @@ export default function Home() {
   );
   const [exportScale, setExportScale] = useState(100);
   const [exportLongEdge, setExportLongEdge] = useState(0);
+  const [exportShortEdge, setExportShortEdge] = useState(0);
+  const [exportWidth, setExportWidth] = useState(0);
+  const [exportHeight, setExportHeight] = useState(0);
+  const [exportMegapixels, setExportMegapixels] = useState(0);
+  const [exportSizing, setExportSizing] = useState<
+    "percentage" | "dimensions" | "long" | "short" | "megapixels"
+  >("percentage");
   const [exportResolution, setExportResolution] = useState(300);
   const [outputSharpen, setOutputSharpen] = useState<
     "none" | "screen" | "matte" | "glossy"
   >("none");
   const [exportSuffix, setExportSuffix] = useState("-LibreLux");
+  const [exportNameTemplate, setExportNameTemplate] =
+    useState("{name}{suffix}");
   const [watermark, setWatermark] = useState("");
+  const [watermarkImage, setWatermarkImage] = useState("");
+  const [watermarkOpacity, setWatermarkOpacity] = useState(82);
+  const [watermarkPosition, setWatermarkPosition] = useState<
+    "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center"
+  >("bottom-right");
+  const [includeMetadata, setIncludeMetadata] = useState(true);
+  const [includeCopyright, setIncludeCopyright] = useState(true);
   const [history, setHistory] = useState<Adjustments[]>([]);
   const [future, setFuture] = useState<Adjustments[]>([]);
   const [copiedSettings, setCopiedSettings] = useState<Adjustments | null>(
@@ -1226,6 +1535,14 @@ export default function Home() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [shortcutMap, setShortcutMap] = useState({
+    library: "g",
+    develop: "d",
+    optics: "e",
+    pick: "p",
+    reject: "x",
+    unflag: "u",
+  });
   const [highContrast, setHighContrast] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [compactUi, setCompactUi] = useState(false);
@@ -1236,29 +1553,72 @@ export default function Home() {
     "whiteBalance" | "pointColor" | null
   >(null);
   const [pointColor, setPointColor] = useState<PointColorSample | null>(null);
+  const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
+  const presetImportRef = useRef<HTMLInputElement>(null);
+  const catalogImportRef = useRef<HTMLInputElement>(null);
+  const [catalogStatus, setCatalogStatus] = useState("");
+  const [watchDirectory, setWatchDirectory] =
+    useState<StoredDirectoryHandle | null>(null);
+  const [watchStatus, setWatchStatus] = useState("");
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [proofProfile, setProofProfile] = useState<ColorSpace>("srgb");
+  const [softProof, setSoftProof] = useState(false);
+  const [gamutWarnings, setGamutWarnings] = useState(false);
   const [retouchMode, setRetouchMode] = useState<RetouchMode | null>(null);
   const [retouchSize, setRetouchSize] = useState(9);
   const [retouchFeather, setRetouchFeather] = useState(55);
-  const duplicateKeys = useMemo(() => {
-    const counts = new Map<string, number>();
-    photos.forEach((p) => {
-      const key = `${p.name.toLowerCase()}|${p.size}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    });
-    return new Set(
-      [...counts].filter(([, count]) => count > 1).map(([key]) => key),
+  const duplicateIds = useMemo(() => {
+    const ids = new Set<string>();
+    const hamming = (a: string, b: string) => {
+      if (!a || a.length !== b.length) return Infinity;
+      let distance = 0;
+      for (let i = 0; i < a.length; i++) {
+        let value = parseInt(a[i], 16) ^ parseInt(b[i], 16);
+        while (value) {
+          distance += value & 1;
+          value >>= 1;
+        }
+      }
+      return distance;
+    };
+    photos.forEach((photo, index) =>
+      photos.slice(index + 1).forEach((other) => {
+        const exact =
+          photo.name.toLowerCase() === other.name.toLowerCase() &&
+          photo.size === other.size;
+        if (exact || hamming(photo.perceptualHash, other.perceptualHash) <= 8) {
+          ids.add(photo.id);
+          ids.add(other.id);
+        }
+      }),
     );
+    return ids;
   }, [photos]);
   const selected = photos.find((p) => p.id === selectedId);
+  const folders = useMemo(
+    () => [...new Set(photos.map((photo) => photo.folder))].sort(),
+    [photos],
+  );
+  const activeAlbum = albums.find((album) => album.id === activeAlbumId);
+  const albumIncludes = (album: AlbumRecord | undefined, photo: RuntimePhoto) =>
+    !album ||
+    album.kind === "set" ||
+    (album.kind === "smart"
+      ? album.rule === "five-stars"
+        ? photo.rating === 5
+        : album.rule === "flagged"
+          ? photo.flagged
+          : album.rule === "people"
+            ? photo.cull.faces > 0
+            : JSON.stringify(photo.adjustments) !== JSON.stringify(defaults)
+      : album.photoIds.includes(photo.id));
   const filtered = useMemo(
     () =>
       photos
         .filter(
           (p) =>
-            (!activeAlbumId ||
-              albums
-                .find((album) => album.id === activeAlbumId)
-                ?.photoIds.includes(p.id)) &&
+            albumIncludes(activeAlbum, p) &&
+            (!folderFilter || p.folder === folderFilter) &&
             [
               p.name,
               p.metadata.title,
@@ -1279,8 +1639,10 @@ export default function Home() {
               (filter === "flagged" && p.flagged) ||
               (filter === "rated" && p.rating > 0) ||
               (filter === "rejected" && p.rejected) ||
-              (filter === "duplicates" &&
-                duplicateKeys.has(`${p.name.toLowerCase()}|${p.size}`)) ||
+              (filter === "duplicates" && duplicateIds.has(p.id)) ||
+              (filter === "best" &&
+                p.cull.focus >= 45 &&
+                p.cull.exposure >= 55) ||
               (filter === "edited" &&
                 JSON.stringify(p.adjustments) !== JSON.stringify(defaults))),
         )
@@ -1302,9 +1664,9 @@ export default function Home() {
       sort,
       minRating,
       labelFilter,
-      duplicateKeys,
-      albums,
-      activeAlbumId,
+      duplicateIds,
+      activeAlbum,
+      folderFilter,
     ],
   );
   const referencePhoto =
@@ -1313,7 +1675,21 @@ export default function Home() {
     ) ?? photos.find((photo) => photo.id !== selectedId);
   useEffect(() => {
     readPhotos()
-      .then((records) => {
+      .then(async (records) => {
+        const journal = await readSetting<{
+          photo: PhotoRecord;
+          savedAt: number;
+        }>("edit-journal").catch(() => undefined);
+        if (journal?.photo) {
+          const index = records.findIndex(
+            (photo) => photo.id === journal.photo.id,
+          );
+          if (index >= 0 && records[index].editedAt < journal.photo.editedAt)
+            records[index] = journal.photo;
+          else if (index < 0) records.push(journal.photo);
+          await savePhoto(journal.photo).catch(() => undefined);
+          await removeSetting("edit-journal").catch(() => undefined);
+        }
         const runtime = records
           .sort((a, b) => b.createdAt - a.createdAt)
           .map((p) => ({
@@ -1323,6 +1699,12 @@ export default function Home() {
             virtualOf: p.virtualOf ?? null,
             rejected: p.rejected ?? false,
             retouchSpots: p.retouchSpots ?? [],
+            perceptualHash: p.perceptualHash ?? "",
+            cull: p.cull ?? { focus: 0, exposure: 0, faces: 0, similarity: 0 },
+            stackId: p.stackId ?? null,
+            missing: p.missing ?? false,
+            processVersion: p.processVersion ?? "2026",
+            previewBlob: p.previewBlob ?? null,
             masks: (p.masks ?? []).map((mask) => ({
               ...mask,
               visible: mask.visible ?? true,
@@ -1342,6 +1724,9 @@ export default function Home() {
               curves: { ...defaultCurves, ...p.adjustments?.curves },
             },
             url: URL.createObjectURL(p.blob),
+            previewUrl: p.previewBlob
+              ? URL.createObjectURL(p.previewBlob)
+              : URL.createObjectURL(p.blob),
           }));
         setPhotos(runtime);
         const remembered = localStorage.getItem("librelux-selected-photo");
@@ -1370,11 +1755,16 @@ export default function Home() {
           window.showDirectoryPicker ? "none" : "unsupported",
         ),
       );
+    readSetting<StoredDirectoryHandle>("watch-directory")
+      .then((handle) => setWatchDirectory(handle ?? null))
+      .catch(() => undefined);
   }, []);
   useEffect(() => {
     Promise.all([
       readSetting<AlbumRecord[]>("albums"),
       readSetting<ExportRecipe[]>("export-recipes"),
+      readSetting<UserPreset[]>("user-presets"),
+      readSetting<typeof shortcutMap>("shortcut-map"),
       readSetting<{
         highContrast?: boolean;
         reducedMotion?: boolean;
@@ -1383,36 +1773,60 @@ export default function Home() {
         gridSize?: number;
       }>("ui-preferences"),
     ])
-      .then(([savedAlbums, savedRecipes, prefs]) => {
-        if (savedAlbums) setAlbums(savedAlbums);
-        if (savedRecipes)
-          setExportRecipes([
-            ...builtInExportRecipes,
-            ...savedRecipes.filter(
-              (recipe) =>
-                !builtInExportRecipes.some((item) => item.id === recipe.id),
-            ),
-          ]);
-        if (prefs) {
-          setHighContrast(Boolean(prefs.highContrast));
-          setReducedMotion(Boolean(prefs.reducedMotion));
-          setCompactUi(Boolean(prefs.compactUi));
-          setShowFilmstrip(prefs.showFilmstrip !== false);
-          setGridSize(prefs.gridSize ?? 155);
-        }
-      })
+      .then(
+        ([savedAlbums, savedRecipes, savedPresets, savedShortcuts, prefs]) => {
+          if (savedAlbums)
+            setAlbums(
+              savedAlbums.map((album) => ({
+                ...album,
+                kind: album.kind ?? "album",
+                parentId: album.parentId ?? null,
+                rule: album.rule ?? null,
+                target: album.target ?? false,
+              })),
+            );
+          if (savedRecipes)
+            setExportRecipes([
+              ...builtInExportRecipes,
+              ...savedRecipes.filter(
+                (recipe) =>
+                  !builtInExportRecipes.some((item) => item.id === recipe.id),
+              ),
+            ]);
+          if (savedPresets) setUserPresets(savedPresets);
+          if (savedShortcuts)
+            setShortcutMap((current) => ({ ...current, ...savedShortcuts }));
+          if (prefs) {
+            setHighContrast(Boolean(prefs.highContrast));
+            setReducedMotion(Boolean(prefs.reducedMotion));
+            setCompactUi(Boolean(prefs.compactUi));
+            setShowFilmstrip(prefs.showFilmstrip !== false);
+            setGridSize(prefs.gridSize ?? 155);
+          }
+        },
+      )
       .catch(() => undefined);
   }, []);
   useEffect(() => {
     if (selectedId) localStorage.setItem("librelux-selected-photo", selectedId);
   }, [selectedId]);
+  useEffect(() => {
+    if ("serviceWorker" in navigator)
+      void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  }, []);
   const updateSelected = useCallback(
     (updater: (photo: RuntimePhoto) => RuntimePhoto, persist = true) => {
       setPhotos((current) =>
         current.map((photo) => {
           if (photo.id !== selectedId) return photo;
           const next = { ...updater(photo), editedAt: Date.now() };
-          if (persist) void savePhoto(next);
+          if (persist)
+            void saveSetting("edit-journal", {
+              photo: next,
+              savedAt: Date.now(),
+            })
+              .then(() => savePhoto(next))
+              .then(() => removeSetting("edit-journal"));
           return next;
         }),
       );
@@ -1490,51 +1904,196 @@ export default function Home() {
     const files = Array.from(fileList).filter((file) =>
       file.type.startsWith("image/"),
     );
-    const imported = files.map((file) => {
-      const relative =
-        (file as File & { webkitRelativePath?: string }).webkitRelativePath ??
-        "";
-      const now = Date.now();
-      const record: PhotoRecord = {
-        id: crypto.randomUUID(),
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        createdAt: now,
-        editedAt: now,
-        rating: 0,
-        flagged: false,
-        rejected: false,
-        label: "none",
-        folder: relative.split("/").slice(0, -1).join("/") || "Local library",
-        virtualOf: null,
-        blob: file,
-        adjustments: {
-          ...defaults,
-          hsl: { ...defaultHsl },
-          bwMix: { ...defaultBw },
-          curves: { ...defaultCurves },
-        },
-        metadata: { ...emptyMetadata },
-        masks: [],
-        retouchSpots: [],
-      };
-      void savePhoto(record);
-      return { ...record, url: URL.createObjectURL(file) };
-    });
+    const imported = await Promise.all(
+      files.map(async (file) => {
+        const relative =
+          (file as File & { webkitRelativePath?: string }).webkitRelativePath ??
+          "";
+        const now = Date.now();
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed =
+            ((await exifr.parse(file, {
+              tiff: true,
+              exif: true,
+              gps: true,
+              iptc: true,
+              xmp: true,
+            })) as Record<string, unknown>) ?? {};
+        } catch {
+          parsed = {};
+        }
+        const [analysis, previewBlob] = await Promise.all([
+          analyzeImportFile(file).catch(() => ({
+            perceptualHash: "",
+            cull: { focus: 0, exposure: 0, faces: 0, similarity: 0 },
+          })),
+          createSmartPreview(file),
+        ]);
+        const keywordSource =
+          parsed.Keywords ?? parsed.Subject ?? parsed.subject;
+        const keywords = Array.isArray(keywordSource)
+          ? keywordSource.map(String)
+          : typeof keywordSource === "string"
+            ? keywordSource
+                .split(/[,;]/)
+                .map((value) => value.trim())
+                .filter(Boolean)
+            : [];
+        const captured =
+          parsed.DateTimeOriginal instanceof Date
+            ? parsed.DateTimeOriginal.toISOString()
+            : parsed.CreateDate instanceof Date
+              ? parsed.CreateDate.toISOString()
+              : "";
+        const record: PhotoRecord = {
+          id: crypto.randomUUID(),
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          createdAt: now,
+          editedAt: now,
+          rating: 0,
+          flagged: false,
+          rejected: false,
+          label: "none",
+          folder: relative.split("/").slice(0, -1).join("/") || "Local library",
+          virtualOf: null,
+          blob: file,
+          adjustments: {
+            ...defaults,
+            hsl: { ...defaultHsl },
+            bwMix: { ...defaultBw },
+            curves: { ...defaultCurves },
+          },
+          metadata: {
+            ...emptyMetadata,
+            title: String(parsed.ObjectName ?? parsed.Title ?? ""),
+            caption: String(
+              parsed.ImageDescription ??
+                parsed.Caption ??
+                parsed.description ??
+                "",
+            ),
+            creator: String(
+              parsed.Artist ?? parsed.Creator ?? parsed.creator ?? "",
+            ),
+            copyright: String(parsed.Copyright ?? parsed.CopyrightNotice ?? ""),
+            keywords,
+            camera: [parsed.Make, parsed.Model]
+              .filter(Boolean)
+              .map(String)
+              .join(" "),
+            lens: String(parsed.LensModel ?? parsed.Lens ?? ""),
+            capturedAt: captured,
+            iso: parsed.ISO ? String(parsed.ISO) : "",
+            aperture: parsed.FNumber ? `f/${parsed.FNumber}` : "",
+            shutter: parsed.ExposureTime ? String(parsed.ExposureTime) : "",
+            focalLength: parsed.FocalLength ? `${parsed.FocalLength} mm` : "",
+            latitude:
+              typeof parsed.latitude === "number" ? parsed.latitude : null,
+            longitude:
+              typeof parsed.longitude === "number" ? parsed.longitude : null,
+          },
+          masks: [],
+          retouchSpots: [],
+          perceptualHash: analysis.perceptualHash,
+          cull: analysis.cull,
+          stackId: null,
+          missing: false,
+          processVersion: "2026",
+          previewBlob,
+        };
+        void savePhoto(record);
+        return {
+          ...record,
+          url: URL.createObjectURL(file),
+          previewUrl: previewBlob
+            ? URL.createObjectURL(previewBlob)
+            : URL.createObjectURL(file),
+        };
+      }),
+    );
     setPhotos((p) => [...imported, ...p]);
     if (imported[0]) {
       setSelectedId(imported[0].id);
       setWorkspace("develop");
     }
   }, []);
+  const chooseWatchDirectory = useCallback(async () => {
+    if (!window.showDirectoryPicker) {
+      setWatchStatus("Folder watching is not supported in this browser");
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker();
+      setWatchDirectory(handle);
+      await saveSetting("watch-directory", handle);
+      setWatchStatus(`Watching ${handle.name}`);
+    } catch (error) {
+      if ((error as DOMException).name !== "AbortError")
+        setWatchStatus("Could not connect that folder");
+    }
+  }, []);
+  const scanWatchDirectory = useCallback(async () => {
+    if (!watchDirectory?.values) {
+      setWatchStatus("Choose a watched folder first");
+      return;
+    }
+    try {
+      const permission = await watchDirectory.queryPermission?.({
+        mode: "readwrite",
+      });
+      if (permission !== "granted") {
+        const requested = await watchDirectory.requestPermission?.({
+          mode: "readwrite",
+        });
+        if (requested !== "granted") {
+          setWatchStatus("Reconnect the watched folder to scan it");
+          return;
+        }
+      }
+      const files: File[] = [];
+      for await (const entry of watchDirectory.values()) {
+        if (entry.kind !== "file" || !entry.getFile) continue;
+        const file = await entry.getFile();
+        if (
+          file.type.startsWith("image/") &&
+          !photos.some(
+            (photo) => photo.name === file.name && photo.size === file.size,
+          )
+        )
+          files.push(file);
+      }
+      if (files.length) await importFiles(files);
+      setWatchStatus(
+        files.length
+          ? `Imported ${files.length} new photo${files.length === 1 ? "" : "s"}`
+          : `${watchDirectory.name} is up to date`,
+      );
+    } catch {
+      setWatchStatus("The watched folder needs to be reconnected");
+    }
+  }, [importFiles, photos, watchDirectory]);
+  useEffect(() => {
+    if (!watchDirectory) return;
+    const interval = window.setInterval(
+      () => void scanWatchDirectory(),
+      60_000,
+    );
+    return () => window.clearInterval(interval);
+  }, [scanWatchDirectory, watchDirectory]);
   const removeSelected = useCallback(() => {
+    setDeleteOpen(true);
+  }, []);
+  const confirmRemoveSelected = useCallback(() => {
     if (!selected) return;
     void deletePhoto(selected.id);
     URL.revokeObjectURL(selected.url);
     const remaining = photos.filter((p) => p.id !== selected.id);
     setPhotos(remaining);
     setSelectedId(remaining[0]?.id ?? null);
+    setDeleteOpen(false);
   }, [selected, photos]);
   const toggleSelection = (id: string, additive = false) => {
     setSelectedId(id);
@@ -1598,35 +2157,108 @@ export default function Home() {
     setSelectedIds([id]);
   };
   const exportCatalog = () => {
-    const records = photos.map(({ url, blob, ...photo }) => ({
-      ...photo,
-      original: {
-        name: blob instanceof Blob ? photo.name : "",
-        size: photo.size,
-        type: photo.type,
+    const records = photos.map(
+      ({ url, previewUrl, blob, previewBlob, ...photo }) => {
+        void url;
+        void previewUrl;
+        void previewBlob;
+        return {
+          ...photo,
+          original: { name: photo.name, size: blob.size, type: photo.type },
+        };
       },
-    }));
+    );
+    const header = new TextEncoder().encode(
+      JSON.stringify({
+        format: "LibreLux Catalog",
+        version: 2,
+        createdAt: new Date().toISOString(),
+        records,
+      }),
+    );
     const data = new Blob(
-      [
-        JSON.stringify(
-          {
-            format: "LibreLux Catalog",
-            version: 1,
-            createdAt: new Date().toISOString(),
-            records,
-          },
-          null,
-          2,
-        ),
-      ],
-      { type: "application/json" },
+      [header, new Uint8Array([10]), ...photos.map((photo) => photo.blob)],
+      { type: "application/x-librelux-catalog" },
     );
     const url = URL.createObjectURL(data);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `LibreLux-Catalog-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `LibreLux-Catalog-${new Date().toISOString().slice(0, 10)}.libreluxcat`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const restoreCatalog = async (file?: File) => {
+    if (!file) return;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const newline = bytes.indexOf(10);
+      if (newline < 1) throw new Error("Invalid catalog");
+      const manifest = JSON.parse(
+        new TextDecoder().decode(bytes.slice(0, newline)),
+      ) as {
+        format: string;
+        version: number;
+        records: Array<
+          Omit<PhotoRecord, "blob"> & {
+            original: { name: string; size: number; type: string };
+          }
+        >;
+      };
+      if (manifest.format !== "LibreLux Catalog" || manifest.version !== 2)
+        throw new Error("Unsupported catalog");
+      let offset = newline + 1;
+      const restored: RuntimePhoto[] = [];
+      for (const record of manifest.records) {
+        const size = record.original.size;
+        if (offset + size > bytes.length)
+          throw new Error("Catalog integrity check failed");
+        const blob = new Blob([bytes.slice(offset, offset + size)], {
+          type: record.original.type,
+        });
+        offset += size;
+        const { original: _original, ...photo } = record;
+        void _original;
+        const runtime = {
+          ...photo,
+          blob,
+          url: URL.createObjectURL(blob),
+          previewBlob: null,
+          previewUrl: URL.createObjectURL(blob),
+          missing: false,
+        } as RuntimePhoto;
+        await savePhoto(runtime);
+        restored.push(runtime);
+      }
+      if (offset !== bytes.length) throw new Error("Unexpected catalog data");
+      setPhotos((current) => [...restored, ...current]);
+      setSelectedId(restored[0]?.id ?? null);
+      setCatalogStatus(`Restored and verified ${restored.length} photos`);
+    } catch (error) {
+      setCatalogStatus(
+        error instanceof Error ? error.message : "Catalog restore failed",
+      );
+    }
+  };
+  const verifyAndOptimizeCatalog = async () => {
+    const valid = photos.filter(
+      (photo) =>
+        photo.blob instanceof Blob &&
+        photo.blob.size === photo.size &&
+        Boolean(photo.id),
+    );
+    for (const photo of valid) await savePhoto({ ...photo, missing: false });
+    setPhotos((current) =>
+      current.map((photo) => ({
+        ...photo,
+        missing:
+          !(photo.blob instanceof Blob) || photo.blob.size !== photo.size,
+      })),
+    );
+    setCatalogStatus(
+      valid.length === photos.length
+        ? `Verified and optimized ${valid.length} photos`
+        : `${photos.length - valid.length} missing or damaged originals found`,
+    );
   };
   const applyPreset = (settings: Partial<Adjustments>) => {
     if (!selected) return;
@@ -1645,6 +2277,117 @@ export default function Home() {
     setSelectedPreset((current) =>
       current?.id === id ? null : { id, name, settings },
     );
+  const persistUserPresets = (next: UserPreset[]) => {
+    setUserPresets(next);
+    void saveSetting("user-presets", next);
+  };
+  const createUserPreset = () => {
+    if (!selected) return;
+    persistUserPresets([
+      ...userPresets,
+      {
+        id: crypto.randomUUID(),
+        name: `Custom ${userPresets.length + 1}`,
+        group: "My presets",
+        settings: { ...selected.adjustments },
+        createdAt: Date.now(),
+      },
+    ]);
+  };
+  const updateUserPreset = (id: string, patch: Partial<UserPreset>) =>
+    persistUserPresets(
+      userPresets.map((preset) =>
+        preset.id === id ? { ...preset, ...patch } : preset,
+      ),
+    );
+  const deleteUserPreset = (id: string) =>
+    persistUserPresets(userPresets.filter((preset) => preset.id !== id));
+  const exportUserPresets = () => {
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          { format: "LibreLux Presets", version: 1, presets: userPresets },
+          null,
+          2,
+        ),
+      ],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "LibreLux-Presets.json";
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const importUserPresets = async (file?: File) => {
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text()) as {
+        presets?: Partial<UserPreset>[];
+      };
+      const imported = (data.presets ?? [])
+        .map((preset, index) => {
+          const settings = Object.fromEntries(
+            Object.entries(preset.settings ?? {}).filter(
+              ([key, value]) =>
+                key in defaults &&
+                (typeof value === "number" || typeof value === "object"),
+            ),
+          ) as Partial<Adjustments>;
+          return {
+            id: crypto.randomUUID(),
+            name: String(preset.name ?? `Imported ${index + 1}`),
+            group: String(preset.group ?? "Imported"),
+            settings,
+            createdAt: Date.now(),
+          };
+        })
+        .filter((preset) => Object.keys(preset.settings).length);
+      persistUserPresets([...userPresets, ...imported]);
+    } catch {
+      return;
+    }
+  };
+  const applyPresetToSelection = (settings: Partial<Adjustments>) => {
+    const targets = selectedIds.length
+      ? selectedIds
+      : selectedId
+        ? [selectedId]
+        : [];
+    setPhotos((current) =>
+      current.map((photo) => {
+        if (!targets.includes(photo.id)) return photo;
+        const next = {
+          ...photo,
+          editedAt: Date.now(),
+          adjustments: { ...photo.adjustments, ...settings },
+        };
+        void savePhoto(next);
+        return next;
+      }),
+    );
+  };
+  const applyAdaptivePreset = async (kind: "subject" | "sky" | "portrait") => {
+    if (!selected) return;
+    const stats = await analyzePhoto(selected.url);
+    const exposureLift = Math.max(
+      -0.4,
+      Math.min(0.65, Math.log2(135 / Math.max(24, stats.average))),
+    );
+    applyPreset(
+      kind === "sky"
+        ? { highlights: -35, dehaze: 18, vibrance: 12 }
+        : kind === "portrait"
+          ? {
+              exposure: exposureLift * 0.5,
+              texture: -18,
+              clarity: -8,
+              temperature: 5,
+            }
+          : { exposure: exposureLift, shadows: 18, clarity: 10 },
+    );
+  };
   const commitPreset = () => {
     if (!selectedPreset || !selected) return;
     const strength = presetAmount / 100;
@@ -1694,10 +2437,83 @@ export default function Home() {
       name,
       photoIds: [],
       createdAt: Date.now(),
+      kind: "album",
+      parentId:
+        albums.find((album) => album.kind === "set" && album.target)?.id ??
+        null,
+      rule: null,
+      target: false,
     };
     persistAlbums([...albums, album]);
     setActiveAlbumId(album.id);
     setNewAlbumName("");
+  };
+  const createCollection = (
+    kind: "set" | "quick" | "smart",
+    rule: AlbumRecord["rule"] = null,
+  ) => {
+    const album: AlbumRecord = {
+      id: crypto.randomUUID(),
+      name:
+        kind === "set"
+          ? `Collection set ${albums.filter((item) => item.kind === "set").length + 1}`
+          : kind === "quick"
+            ? "Quick Collection"
+            : `Smart ${rule?.replace("-", " ") ?? "album"}`,
+      photoIds:
+        kind === "quick"
+          ? [
+              ...new Set(
+                selectedIds.length
+                  ? selectedIds
+                  : selectedId
+                    ? [selectedId]
+                    : [],
+              ),
+            ]
+          : [],
+      createdAt: Date.now(),
+      kind,
+      parentId: null,
+      rule,
+      target: false,
+    };
+    persistAlbums([...albums, album]);
+    setActiveAlbumId(album.id);
+  };
+  const setTargetAlbum = (id: string) =>
+    persistAlbums(
+      albums.map((album) => ({ ...album, target: album.id === id })),
+    );
+  const autoStackPhotos = () => {
+    const ordered = [...photos].sort(
+      (a, b) =>
+        (a.metadata.capturedAt
+          ? Date.parse(a.metadata.capturedAt)
+          : a.createdAt) -
+        (b.metadata.capturedAt
+          ? Date.parse(b.metadata.capturedAt)
+          : b.createdAt),
+    );
+    let previousTime = 0,
+      currentStack = "";
+    const ids = new Map<string, string | null>();
+    ordered.forEach((photo) => {
+      const time = photo.metadata.capturedAt
+        ? Date.parse(photo.metadata.capturedAt)
+        : photo.createdAt;
+      if (!previousTime || time - previousTime > 2500)
+        currentStack = crypto.randomUUID();
+      ids.set(photo.id, currentStack);
+      previousTime = time;
+    });
+    setPhotos((current) =>
+      current.map((photo) => {
+        const next = { ...photo, stackId: ids.get(photo.id) ?? null };
+        void savePhoto(next);
+        return next;
+      }),
+    );
   };
   const toggleAlbumMembership = (albumId: string) => {
     const ids = selectedIds.length
@@ -1862,6 +2678,10 @@ export default function Home() {
     setFuture((f) => f.slice(1));
     updateSelected((p) => ({ ...p, adjustments: next }));
   }, [selected, future, updateSelected]);
+  const openPhotoPicker = useCallback(
+    () => document.getElementById("librelux-photo-import")?.click(),
+    [],
+  );
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement)?.tagName;
@@ -1880,7 +2700,8 @@ export default function Home() {
       }
       if (mod && key === "z") {
         event.preventDefault();
-        event.shiftKey ? redo() : undo();
+        if (event.shiftKey) redo();
+        else undo();
         return;
       }
       if (mod && event.shiftKey && key === "c" && selected) {
@@ -1893,9 +2714,9 @@ export default function Home() {
         updateSelected((p) => ({ ...p, adjustments: { ...copiedSettings } }));
         return;
       }
-      if (key === "g") setWorkspace("library");
-      if (key === "d") setWorkspace("develop");
-      if (key === "e") setWorkspace("enhance");
+      if (key === shortcutMap.library) setWorkspace("library");
+      if (key === shortcutMap.develop) setWorkspace("develop");
+      if (key === shortcutMap.optics) setWorkspace("enhance");
       if (event.shiftKey && key === "1") {
         setWorkspace("enhance");
         setOpticsMode("pure");
@@ -1910,18 +2731,18 @@ export default function Home() {
       }
       if (event.key === "\\")
         setCompareMode((mode) => (mode === "edited" ? "original" : "edited"));
-      if (key === "p" && selected)
+      if (key === shortcutMap.pick && selected)
         updateSelected((p) => ({ ...p, flagged: true, rejected: false }));
-      if (key === "x" && selected)
+      if (key === shortcutMap.reject && selected)
         updateSelected((p) => ({ ...p, rejected: true, flagged: false }));
-      if (key === "u" && selected)
+      if (key === shortcutMap.unflag && selected)
         updateSelected((p) => ({ ...p, rejected: false, flagged: false }));
       if (/^[0-5]$/.test(key) && selected && !event.shiftKey)
         updateSelected((p) => ({ ...p, rating: Number(key) }));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [redo, undo, selected, updateSelected, copiedSettings]);
+  }, [redo, undo, selected, updateSelected, copiedSettings, shortcutMap]);
   useEffect(() => {
     const context = document.modelContext;
     if (!context?.registerTool) return;
@@ -2083,6 +2904,13 @@ export default function Home() {
     });
     setSampleMode(null);
   };
+  const renderedExportName = (photo: RuntimePhoto) =>
+    exportNameTemplate
+      .replaceAll("{name}", photo.name.replace(/\.[^.]+$/, ""))
+      .replaceAll("{suffix}", exportSuffix)
+      .replaceAll("{date}", new Date().toISOString().slice(0, 10))
+      .replaceAll("{rating}", String(photo.rating))
+      .replace(/[^a-z0-9._ -]/gi, "-") || "LibreLux-export";
   const doExport = async () => {
     if (!selected) return;
     const image = new Image();
@@ -2092,11 +2920,16 @@ export default function Home() {
       sy = 0,
       sw = image.naturalWidth,
       sh = image.naturalHeight;
-    const factor =
-      exportLongEdge > 0
-        ? exportLongEdge / Math.max(sw, sh)
-        : exportScale / 100;
+    let factor = exportScale / 100;
     const ratio = selected.adjustments.cropRatio;
+    const insetLeft = sw * (selected.adjustments.cropLeft / 100);
+    const insetRight = sw * (selected.adjustments.cropRight / 100);
+    const insetTop = sh * (selected.adjustments.cropTop / 100);
+    const insetBottom = sh * (selected.adjustments.cropBottom / 100);
+    sx += insetLeft;
+    sy += insetTop;
+    sw = Math.max(1, sw - insetLeft - insetRight);
+    sh = Math.max(1, sh - insetTop - insetBottom);
     if (ratio > 0) {
       const original = sw / sh;
       if (original > ratio) {
@@ -2109,13 +2942,27 @@ export default function Home() {
         sh = next;
       }
     }
+    if (exportSizing === "long" && exportLongEdge > 0)
+      factor = exportLongEdge / Math.max(sw, sh);
+    else if (exportSizing === "short" && exportShortEdge > 0)
+      factor = exportShortEdge / Math.min(sw, sh);
+    else if (
+      exportSizing === "dimensions" &&
+      (exportWidth > 0 || exportHeight > 0)
+    )
+      factor = Math.min(
+        exportWidth > 0 ? exportWidth / sw : Infinity,
+        exportHeight > 0 ? exportHeight / sh : Infinity,
+      );
+    else if (exportSizing === "megapixels" && exportMegapixels > 0)
+      factor = Math.sqrt((exportMegapixels * 1_000_000) / (sw * sh));
     const rotated = Math.abs(selected.adjustments.rotation % 180) === 90;
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round((rotated ? sh : sw) * factor));
     canvas.height = Math.max(1, Math.round((rotated ? sw : sh) * factor));
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.filter = `${cssFilter(selected.adjustments)} ${outputSharpen === "none" ? "" : outputSharpen === "screen" ? "contrast(1.04)" : "contrast(1.07)"}`;
+    ctx.filter = `${cssFilter(selected.adjustments, selected.processVersion)} ${outputSharpen === "none" ? "" : outputSharpen === "screen" ? "contrast(1.04)" : "contrast(1.07)"}`;
     ctx.translate(
       canvas.width / 2 + selected.adjustments.offsetX * factor,
       canvas.height / 2 + selected.adjustments.offsetY * factor,
@@ -2133,9 +2980,29 @@ export default function Home() {
       (selected.adjustments.perspectiveScale / 100) *
       (1 + selected.adjustments.distortion / 700);
     ctx.scale(
-      selected.adjustments.flipX * opticalScale,
+      selected.adjustments.flipX *
+        opticalScale *
+        (1 + selected.adjustments.anamorphic / 200),
       selected.adjustments.flipY * opticalScale,
     );
+    if (selected.adjustments.boundaryFill > 0) {
+      ctx.save();
+      ctx.filter = `${cssFilter(selected.adjustments, selected.processVersion)} blur(${Math.max(4, selected.adjustments.boundaryFill / 4)}px)`;
+      const fillScale = 1.08 + selected.adjustments.boundaryFill / 500;
+      ctx.globalAlpha = 0.92;
+      ctx.drawImage(
+        image,
+        sx,
+        sy,
+        sw,
+        sh,
+        (-sw * factor * fillScale) / 2,
+        (-sh * factor * fillScale) / 2,
+        sw * factor * fillScale,
+        sh * factor * fillScale,
+      );
+      ctx.restore();
+    }
     ctx.drawImage(
       image,
       sx,
@@ -2168,7 +3035,9 @@ export default function Home() {
         0,
       );
       layerCtx.scale(
-        selected.adjustments.flipX * opticalScale,
+        selected.adjustments.flipX *
+          opticalScale *
+          (1 + selected.adjustments.anamorphic / 200),
         selected.adjustments.flipY * opticalScale,
       );
       layerCtx.drawImage(
@@ -2311,25 +3180,90 @@ export default function Home() {
       }
       ctx.restore();
     }
-    if (watermark.trim()) {
+    if (watermark.trim() || watermarkImage) {
       ctx.save();
       ctx.resetTransform();
       const fontSize = Math.max(14, Math.round(canvas.width / 42));
+      const margin = fontSize;
+      const anchorX = watermarkPosition.includes("left")
+        ? margin
+        : watermarkPosition.includes("right")
+          ? canvas.width - margin
+          : canvas.width / 2;
+      const anchorY = watermarkPosition.includes("top")
+        ? margin
+        : watermarkPosition.includes("bottom")
+          ? canvas.height - margin
+          : canvas.height / 2;
+      ctx.globalAlpha = watermarkOpacity / 100;
+      if (watermarkImage) {
+        const mark = new Image();
+        mark.src = watermarkImage;
+        await mark.decode();
+        const maxWidth = canvas.width * 0.22,
+          maxHeight = canvas.height * 0.18;
+        const scale = Math.min(
+          maxWidth / mark.naturalWidth,
+          maxHeight / mark.naturalHeight,
+          1,
+        );
+        const markWidth = mark.naturalWidth * scale,
+          markHeight = mark.naturalHeight * scale;
+        const markX = watermarkPosition.includes("left")
+          ? anchorX
+          : watermarkPosition.includes("right")
+            ? anchorX - markWidth
+            : anchorX - markWidth / 2;
+        const markY = watermarkPosition.includes("top")
+          ? anchorY
+          : watermarkPosition.includes("bottom")
+            ? anchorY - markHeight
+            : anchorY - markHeight / 2;
+        ctx.drawImage(mark, markX, markY, markWidth, markHeight);
+      }
       ctx.font = `600 ${fontSize}px system-ui`;
-      ctx.textAlign = "right";
-      ctx.textBaseline = "bottom";
+      ctx.textAlign = watermarkPosition.includes("left")
+        ? "left"
+        : watermarkPosition.includes("right")
+          ? "right"
+          : "center";
+      ctx.textBaseline = watermarkPosition.includes("top")
+        ? "top"
+        : watermarkPosition.includes("bottom")
+          ? "bottom"
+          : "middle";
       ctx.fillStyle = "rgba(0,0,0,.55)";
-      ctx.fillText(
-        watermark,
-        canvas.width - fontSize + 1,
-        canvas.height - fontSize + 1,
-      );
+      ctx.fillText(watermark, anchorX + 1, anchorY + 1);
       ctx.fillStyle = "rgba(255,255,255,.82)";
-      ctx.fillText(
-        watermark,
-        canvas.width - fontSize,
-        canvas.height - fontSize,
-      );
+      ctx.fillText(watermark, anchorX, anchorY);
+      ctx.restore();
+    }
+    if (proofProfile !== "srgb") {
+      ctx.save();
+      ctx.resetTransform();
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const amount =
+        proofProfile === "display-p3"
+          ? 0.035
+          : proofProfile === "adobe-rgb"
+            ? 0.022
+            : -0.025;
+      for (let i = 0; i < imageData.data.length; i += 4) {
+        const r = imageData.data[i],
+          g = imageData.data[i + 1],
+          b = imageData.data[i + 2];
+        const mid = (r + g + b) / 3;
+        imageData.data[i] = Math.max(0, Math.min(255, r + (r - mid) * amount));
+        imageData.data[i + 1] = Math.max(
+          0,
+          Math.min(255, g + (g - mid) * amount),
+        );
+        imageData.data[i + 2] = Math.max(
+          0,
+          Math.min(255, b + (b - mid) * amount),
+        );
+      }
+      ctx.putImageData(imageData, 0, 0);
       ctx.restore();
     }
     const mime =
@@ -2342,12 +3276,34 @@ export default function Home() {
       canvas.toBlob(resolve, mime, exportQuality / 100),
     );
     if (!blob) return;
+    const exportMetadata = includeMetadata
+      ? {
+          ...selected.metadata,
+          copyright: includeCopyright ? selected.metadata.copyright : "",
+          rating: selected.rating,
+          label: selected.label,
+        }
+      : null;
+    const metadataBlob = exportMetadata
+      ? new Blob(
+          [
+            JSON.stringify(
+              {
+                format: "LibreLux Export Metadata",
+                version: 1,
+                photo: renderedExportName(selected),
+                metadata: exportMetadata,
+              },
+              null,
+              2,
+            ),
+          ],
+          { type: "application/json" },
+        )
+      : null;
     if (exportDirectory) {
       const extension = exportFormat === "jpeg" ? "jpg" : exportFormat;
-      const baseName = selected.name.includes(".")
-        ? selected.name.split(".").slice(0, -1).join(".")
-        : selected.name;
-      const fileName = `${baseName}${exportSuffix}.${extension}`;
+      const fileName = `${renderedExportName(selected)}.${extension}`;
       let permission =
         (await exportDirectory.queryPermission?.({ mode: "readwrite" })) ??
         "prompt";
@@ -2362,6 +3318,15 @@ export default function Home() {
         const writable = await file.createWritable();
         await writable.write(blob);
         await writable.close();
+        if (metadataBlob) {
+          const sidecar = await exportDirectory.getFileHandle(
+            `${renderedExportName(selected)}.metadata.json`,
+            { create: true },
+          );
+          const sidecarWritable = await sidecar.createWritable();
+          await sidecarWritable.write(metadataBlob);
+          await sidecarWritable.close();
+        }
         setDirectoryPermission("ready");
         setExportOpen(false);
         return;
@@ -2372,13 +3337,46 @@ export default function Home() {
     const link = document.createElement("a");
     link.href = url;
     const extension = exportFormat === "jpeg" ? "jpg" : exportFormat;
-    link.download = `${selected.name.replace(/\.[^.]+$/, "")}${exportSuffix}.${extension}`;
+    link.download = `${renderedExportName(selected)}.${extension}`;
     link.click();
+    if (metadataBlob) {
+      const metadataUrl = URL.createObjectURL(metadataBlob);
+      const metadataLink = document.createElement("a");
+      metadataLink.href = metadataUrl;
+      metadataLink.download = `${renderedExportName(selected)}.metadata.json`;
+      metadataLink.click();
+      setTimeout(() => URL.revokeObjectURL(metadataUrl), 1000);
+    }
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     setExportOpen(false);
   };
+  const exportOriginalPackage = () => {
+    if (!selected) return;
+    const manifest = JSON.stringify({
+      format: "LibreLux Original Package",
+      version: 1,
+      original: {
+        name: selected.name,
+        type: selected.type,
+        size: selected.size,
+      },
+      adjustments: selected.adjustments,
+      metadata: selected.metadata,
+      masks: selected.masks,
+      retouchSpots: selected.retouchSpots,
+    });
+    const blob = new Blob([`${manifest.length}\n${manifest}`, selected.blob], {
+      type: "application/x-librelux-package",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${selected.name.replace(/\.[^.]+$/, "")}.libreluxpkg`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   const photoTransform = selected
-    ? `translate(${selected.adjustments.offsetX / 4}px,${selected.adjustments.offsetY / 4}px) rotate(${selected.adjustments.rotation}deg) scale(${selected.adjustments.flipX * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700)},${selected.adjustments.flipY * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700)}) perspective(900px) rotateX(${selected.adjustments.perspectiveV / 15}deg) rotateY(${selected.adjustments.perspectiveH / 15}deg)`
+    ? `translate(${selected.adjustments.offsetX / 4}px,${selected.adjustments.offsetY / 4}px) rotate(${selected.adjustments.rotation}deg) scale(${selected.adjustments.flipX * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700) * (1 + selected.adjustments.anamorphic / 200)},${selected.adjustments.flipY * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700)}) perspective(900px) rotateX(${selected.adjustments.perspectiveV / 15}deg) rotateY(${selected.adjustments.perspectiveH / 15}deg)`
     : "";
   return (
     <main
@@ -2390,12 +3388,27 @@ export default function Home() {
       }}
     >
       <input
+        id="librelux-photo-import"
         ref={fileRef}
         type="file"
         accept="image/*,.dng,.raw,.cr2,.cr3,.nef,.arw,.orf,.rw2"
         multiple
         hidden
         onChange={(e) => e.target.files && void importFiles(e.target.files)}
+      />
+      <input
+        ref={presetImportRef}
+        type="file"
+        accept="application/json,.json"
+        hidden
+        onChange={(event) => void importUserPresets(event.target.files?.[0])}
+      />
+      <input
+        ref={catalogImportRef}
+        type="file"
+        accept=".libreluxcat,application/x-librelux-catalog"
+        hidden
+        onChange={(event) => void restoreCatalog(event.target.files?.[0])}
       />
       <input
         ref={folderRef}
@@ -2551,13 +3564,7 @@ export default function Home() {
               onClick={() => setFilter("duplicates")}
             >
               <Columns2 /> Duplicates{" "}
-              <span>
-                {
-                  photos.filter((p) =>
-                    duplicateKeys.has(`${p.name.toLowerCase()}|${p.size}`),
-                  ).length
-                }
-              </span>
+              <span>{photos.filter((p) => duplicateIds.has(p.id)).length}</span>
             </button>
             <button
               className={filter === "rejected" ? "selected" : ""}
@@ -2565,6 +3572,19 @@ export default function Home() {
             >
               <X /> Rejected{" "}
               <span>{photos.filter((p) => p.rejected).length}</span>
+            </button>
+            <button
+              className={filter === "best" ? "selected" : ""}
+              onClick={() => setFilter("best")}
+            >
+              <Sparkles /> Assisted picks{" "}
+              <span>
+                {
+                  photos.filter(
+                    (p) => p.cull.focus >= 45 && p.cull.exposure >= 55,
+                  ).length
+                }
+              </span>
             </button>
           </nav>
           <div className="section-title">
@@ -2604,6 +3624,51 @@ export default function Home() {
             <button onClick={exportCatalog}>
               <Download /> Back up catalog
             </button>
+            <button onClick={() => catalogImportRef.current?.click()}>
+              <FolderOpen /> Restore catalog
+            </button>
+            <button onClick={() => void verifyAndOptimizeCatalog()}>
+              <Check /> Verify & optimize
+            </button>
+            <button onClick={autoStackPhotos}>
+              <Columns2 /> Auto-stack bursts
+            </button>
+            <button onClick={() => void chooseWatchDirectory()}>
+              <FolderOpen />{" "}
+              {watchDirectory ? "Change watched folder" : "Watch folder"}
+            </button>
+            <button
+              onClick={() => void scanWatchDirectory()}
+              disabled={!watchDirectory}
+            >
+              <RefreshCw /> Scan watched folder
+            </button>
+          </nav>
+          {catalogStatus && <p className="catalog-status">{catalogStatus}</p>}
+          {watchStatus && <p className="catalog-status">{watchStatus}</p>}
+          <div className="section-title">
+            <span>Folders</span>
+          </div>
+          <nav className="source-list compact folder-tree">
+            <button
+              className={!folderFilter ? "selected" : ""}
+              onClick={() => setFolderFilter(null)}
+            >
+              <FolderOpen /> All folders <span>{photos.length}</span>
+            </button>
+            {folders.map((folder) => (
+              <button
+                key={folder}
+                className={folderFilter === folder ? "selected" : ""}
+                onClick={() => setFolderFilter(folder)}
+                title={folder}
+              >
+                <FolderOpen /> {folder.split("/").at(-1)}{" "}
+                <span>
+                  {photos.filter((photo) => photo.folder === folder).length}
+                </span>
+              </button>
+            ))}
           </nav>
           <div className="section-title">
             <span>Albums</span>
@@ -2619,6 +3684,16 @@ export default function Home() {
             />
             <button aria-label="Create album" onClick={createAlbum}>
               <Plus />
+            </button>
+          </div>
+          <div className="collection-tools">
+            <button onClick={() => createCollection("set")}>Set</button>
+            <button onClick={() => createCollection("quick")}>Quick</button>
+            <button onClick={() => createCollection("smart", "five-stars")}>
+              5★ Smart
+            </button>
+            <button onClick={() => createCollection("smart", "people")}>
+              People
             </button>
           </div>
           <div className="album-list">
@@ -2638,8 +3713,22 @@ export default function Home() {
                   onClick={() => setActiveAlbumId(album.id)}
                 >
                   <FolderPlus />
+                  {album.parentId ? "↳ " : ""}
                   {album.name}
-                  <span>{album.photoIds.length}</span>
+                  {album.target ? " ◆" : ""}
+                  <span>
+                    {album.kind === "smart"
+                      ? photos.filter((photo) => albumIncludes(album, photo))
+                          .length
+                      : album.photoIds.length}
+                  </span>
+                </button>
+                <button
+                  className="album-target"
+                  aria-label={`Make ${album.name} the target collection`}
+                  onClick={() => setTargetAlbum(album.id)}
+                >
+                  ◆
                 </button>
                 <button
                   className="album-delete"
@@ -2651,21 +3740,23 @@ export default function Home() {
               </div>
             ))}
           </div>
-          {activeAlbumId && (
-            <button
-              className="album-membership"
-              disabled={!selectedId}
-              onClick={() => toggleAlbumMembership(activeAlbumId)}
-            >
-              {selectedIds.length > 1
-                ? `Add or remove ${selectedIds.length} selected`
-                : albums
-                      .find((album) => album.id === activeAlbumId)
-                      ?.photoIds.includes(selectedId ?? "")
-                  ? "Remove selected photo"
-                  : "Add selected photo"}
-            </button>
-          )}
+          {activeAlbumId &&
+            activeAlbum &&
+            (activeAlbum.kind === "album" || activeAlbum.kind === "quick") && (
+              <button
+                className="album-membership"
+                disabled={!selectedId}
+                onClick={() => toggleAlbumMembership(activeAlbumId)}
+              >
+                {selectedIds.length > 1
+                  ? `Add or remove ${selectedIds.length} selected`
+                  : albums
+                        .find((album) => album.id === activeAlbumId)
+                        ?.photoIds.includes(selectedId ?? "")
+                    ? "Remove selected photo"
+                    : "Add selected photo"}
+              </button>
+            )}
           <div className="section-title">
             <span>Color filter</span>
           </div>
@@ -2726,6 +3817,21 @@ export default function Home() {
               </ToolButton>
             )}
             <div className="view-tools">
+              {selected && (
+                <button
+                  className="process-version"
+                  title="Switch processing version"
+                  onClick={() =>
+                    updateSelected((photo) => ({
+                      ...photo,
+                      processVersion:
+                        photo.processVersion === "2026" ? "2025" : "2026",
+                    }))
+                  }
+                >
+                  Process {selected.processVersion}
+                </button>
+              )}
               <ToolButton
                 label={`Compare: ${compareMode}`}
                 active={compareMode !== "edited"}
@@ -2823,6 +3929,7 @@ export default function Home() {
             />
           ) : selected ? (
             <EditorCanvas
+              key={selected.id}
               photo={selected}
               referencePhoto={referencePhoto}
               workspace={workspace}
@@ -2853,6 +3960,12 @@ export default function Home() {
               retouchSize={retouchSize}
               retouchFeather={retouchFeather}
               onRetouchSpot={addRetouchSpot}
+              softProof={softProof}
+              proofProfile={proofProfile}
+              gamutWarnings={gamutWarnings}
+              allowFullResolution={
+                deviceMemory > 4 || selected.size < 40_000_000
+              }
             />
           ) : (
             <EmptyLibrary onImport={() => fileRef.current?.click()} />
@@ -2865,7 +3978,7 @@ export default function Home() {
                   className={photo.id === selectedId ? "selected" : ""}
                   onClick={() => setSelectedId(photo.id)}
                 >
-                  <img src={photo.url} alt={photo.name} />
+                  <img src={photo.previewUrl} alt={photo.name} />
                   <i style={{ background: labelColors[photo.label] }} />
                 </button>
               ))}
@@ -2874,7 +3987,7 @@ export default function Home() {
           <footer className="statusbar">
             <span>
               {selected
-                ? `${selected.name} · ${formatBytes(selected.size)}`
+                ? `${selected.name} · ${formatBytes(selected.size)} · ${deviceMemory <= 4 && selected.size >= 40_000_000 ? "Smart preview protects memory" : "Full preview"}`
                 : "No photo selected"}
             </span>
             <div>
@@ -2938,6 +4051,15 @@ export default function Home() {
                 photo={selected}
                 showClipping={showClipping}
                 onToggleClipping={() => setShowClipping((value) => !value)}
+                onToneChange={(key, delta) =>
+                  setAdjustment(
+                    key,
+                    Math.max(
+                      -100,
+                      Math.min(100, selected.adjustments[key] + delta),
+                    ),
+                  )
+                }
               />
               {workspace === "library" ? (
                 <LibraryInspector
@@ -2985,6 +4107,27 @@ export default function Home() {
                   updateRetouchSpot={updateRetouchSpot}
                   deleteRetouchSpot={deleteRetouchSpot}
                   clearRetouchSpots={clearRetouchSpots}
+                  userPresets={userPresets}
+                  createUserPreset={createUserPreset}
+                  updateUserPreset={updateUserPreset}
+                  deleteUserPreset={deleteUserPreset}
+                  exportUserPresets={exportUserPresets}
+                  importUserPresets={() => presetImportRef.current?.click()}
+                  chooseUserPreset={(preset) =>
+                    choosePreset(
+                      `user-${preset.id}`,
+                      preset.name,
+                      preset.settings,
+                    )
+                  }
+                  applyPresetToSelection={applyPresetToSelection}
+                  applyAdaptivePreset={applyAdaptivePreset}
+                  softProof={softProof}
+                  setSoftProof={setSoftProof}
+                  proofProfile={proofProfile}
+                  setProofProfile={setProofProfile}
+                  gamutWarnings={gamutWarnings}
+                  setGamutWarnings={setGamutWarnings}
                 />
               ) : opticsMode === "pure" ? (
                 <PurePanels
@@ -3032,14 +4175,38 @@ export default function Home() {
         setScale={setExportScale}
         longEdge={exportLongEdge}
         setLongEdge={setExportLongEdge}
+        shortEdge={exportShortEdge}
+        setShortEdge={setExportShortEdge}
+        width={exportWidth}
+        setWidth={setExportWidth}
+        height={exportHeight}
+        setHeight={setExportHeight}
+        megapixels={exportMegapixels}
+        setMegapixels={setExportMegapixels}
+        sizing={exportSizing}
+        setSizing={setExportSizing}
         resolution={exportResolution}
         setResolution={setExportResolution}
         outputSharpen={outputSharpen}
         setOutputSharpen={setOutputSharpen}
         suffix={exportSuffix}
         setSuffix={setExportSuffix}
+        nameTemplate={exportNameTemplate}
+        setNameTemplate={setExportNameTemplate}
         watermark={watermark}
         setWatermark={setWatermark}
+        watermarkImage={watermarkImage}
+        setWatermarkImage={setWatermarkImage}
+        watermarkOpacity={watermarkOpacity}
+        setWatermarkOpacity={setWatermarkOpacity}
+        watermarkPosition={watermarkPosition}
+        setWatermarkPosition={setWatermarkPosition}
+        includeMetadata={includeMetadata}
+        setIncludeMetadata={setIncludeMetadata}
+        includeCopyright={includeCopyright}
+        setIncludeCopyright={setIncludeCopyright}
+        colorSpace={proofProfile}
+        setColorSpace={setProofProfile}
         directory={exportDirectory}
         directoryPermission={directoryPermission}
         chooseDirectory={chooseExportDirectory}
@@ -3050,6 +4217,7 @@ export default function Home() {
         saveRecipe={saveCurrentExportRecipe}
         deleteRecipe={deleteExportRecipe}
         onExport={doExport}
+        onExportPackage={exportOriginalPackage}
       />
       <Dialog open={commandOpen} onOpenChange={setCommandOpen}>
         <DialogContent className="command-dialog">
@@ -3098,7 +4266,7 @@ export default function Home() {
               {
                 name: "Import photos",
                 keys: "",
-                run: () => fileRef.current?.click(),
+                run: openPhotoPicker,
               },
               {
                 name: "Export photo",
@@ -3239,19 +4407,76 @@ export default function Home() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove this photo?</DialogTitle>
+            <DialogDescription>
+              LibreLux can remove its local catalog copy. The original file
+              outside LibreLux will never be deleted without direct file
+              permission.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="delete-choices">
+            <button onClick={confirmRemoveSelected}>
+              Remove from LibreLux only
+            </button>
+            <button disabled>
+              Delete source file — unavailable for copied originals
+            </button>
+          </div>
+          <DialogFooter>
+            <button
+              className="secondary-button"
+              onClick={() => setDeleteOpen(false)}
+            >
+              Cancel
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="shortcuts-dialog">
           <DialogHeader>
             <DialogTitle>Keyboard shortcuts</DialogTitle>
             <DialogDescription>
-              Familiar controls for a faster photo workflow.
+              Familiar controls for a faster photo workflow. Click a letter to
+              customize it; changes stay on this device.
             </DialogDescription>
           </DialogHeader>
+          <div className="shortcut-editor">
+            {(
+              [
+                ["library", "Library"],
+                ["develop", "Develop"],
+                ["optics", "Optics"],
+                ["pick", "Pick"],
+                ["reject", "Reject"],
+                ["unflag", "Unflag"],
+              ] as const
+            ).map(([id, label]) => (
+              <label key={id}>
+                <span>{label}</span>
+                <input
+                  aria-label={`${label} shortcut`}
+                  maxLength={1}
+                  value={shortcutMap[id].toUpperCase()}
+                  onChange={(event) => {
+                    const value = event.target.value.toLowerCase().slice(-1);
+                    if (!/^[a-z]$/.test(value)) return;
+                    const next = { ...shortcutMap, [id]: value };
+                    setShortcutMap(next);
+                    void saveSetting("shortcut-map", next);
+                  }}
+                />
+              </label>
+            ))}
+          </div>
           <div className="shortcut-grid">
             {[
-              ["Library", "G"],
-              ["Develop", "D"],
-              ["Optics", "E"],
+              ["Library", shortcutMap.library.toUpperCase()],
+              ["Develop", shortcutMap.develop.toUpperCase()],
+              ["Optics", shortcutMap.optics.toUpperCase()],
               ["Pure", "Shift 1"],
               ["Creative", "Shift 2"],
               ["Film", "Shift 3"],
@@ -3260,9 +4485,9 @@ export default function Home() {
               ["Copy edits", "⌘/Ctrl Shift C"],
               ["Paste edits", "⌘/Ctrl Shift V"],
               ["Before / after", "\\"],
-              ["Pick", "P"],
-              ["Reject", "X"],
-              ["Unflag", "U"],
+              ["Pick", shortcutMap.pick.toUpperCase()],
+              ["Reject", shortcutMap.reject.toUpperCase()],
+              ["Unflag", shortcutMap.unflag.toUpperCase()],
               ["Rating", "0–5"],
               ["Commands", "⌘/Ctrl K"],
               ["Shortcut help", "?"],
@@ -3291,14 +4516,38 @@ function ExportDialog({
   setScale,
   longEdge,
   setLongEdge,
+  shortEdge,
+  setShortEdge,
+  width,
+  setWidth,
+  height,
+  setHeight,
+  megapixels,
+  setMegapixels,
+  sizing,
+  setSizing,
   resolution,
   setResolution,
   outputSharpen,
   setOutputSharpen,
   suffix,
   setSuffix,
+  nameTemplate,
+  setNameTemplate,
   watermark,
   setWatermark,
+  watermarkImage,
+  setWatermarkImage,
+  watermarkOpacity,
+  setWatermarkOpacity,
+  watermarkPosition,
+  setWatermarkPosition,
+  includeMetadata,
+  setIncludeMetadata,
+  includeCopyright,
+  setIncludeCopyright,
+  colorSpace,
+  setColorSpace,
   directory,
   directoryPermission,
   chooseDirectory,
@@ -3309,6 +4558,7 @@ function ExportDialog({
   saveRecipe,
   deleteRecipe,
   onExport,
+  onExportPackage,
 }: {
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -3321,14 +4571,47 @@ function ExportDialog({
   setScale: (scale: number) => void;
   longEdge: number;
   setLongEdge: (value: number) => void;
+  shortEdge: number;
+  setShortEdge: (value: number) => void;
+  width: number;
+  setWidth: (value: number) => void;
+  height: number;
+  setHeight: (value: number) => void;
+  megapixels: number;
+  setMegapixels: (value: number) => void;
+  sizing: "percentage" | "dimensions" | "long" | "short" | "megapixels";
+  setSizing: (
+    value: "percentage" | "dimensions" | "long" | "short" | "megapixels",
+  ) => void;
   resolution: number;
   setResolution: (value: number) => void;
   outputSharpen: "none" | "screen" | "matte" | "glossy";
   setOutputSharpen: (value: "none" | "screen" | "matte" | "glossy") => void;
   suffix: string;
   setSuffix: (value: string) => void;
+  nameTemplate: string;
+  setNameTemplate: (value: string) => void;
   watermark: string;
   setWatermark: (value: string) => void;
+  watermarkImage: string;
+  setWatermarkImage: (value: string) => void;
+  watermarkOpacity: number;
+  setWatermarkOpacity: (value: number) => void;
+  watermarkPosition:
+    | "top-left"
+    | "top-right"
+    | "bottom-left"
+    | "bottom-right"
+    | "center";
+  setWatermarkPosition: (
+    value: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center",
+  ) => void;
+  includeMetadata: boolean;
+  setIncludeMetadata: (value: boolean) => void;
+  includeCopyright: boolean;
+  setIncludeCopyright: (value: boolean) => void;
+  colorSpace: ColorSpace;
+  setColorSpace: (value: ColorSpace) => void;
   directory: StoredDirectoryHandle | null;
   directoryPermission: DirectoryPermissionState;
   chooseDirectory: () => void;
@@ -3339,6 +4622,7 @@ function ExportDialog({
   saveRecipe: () => void;
   deleteRecipe: (id: string) => void;
   onExport: () => void;
+  onExportPackage: () => void;
 }) {
   const extension = format === "jpeg" ? "jpg" : format;
   return (
@@ -3353,9 +4637,11 @@ function ExportDialog({
         <div className="export-preview">
           {photo && (
             <img
-              src={photo.url}
+              src={photo.previewUrl}
               alt=""
-              style={{ filter: cssFilter(photo.adjustments) }}
+              style={{
+                filter: cssFilter(photo.adjustments, photo.processVersion),
+              }}
             />
           )}
           <div>
@@ -3416,6 +4702,26 @@ function ExportDialog({
               </button>
             ))}
           </div>
+          <div className="choice-row wrap">
+            <span>Color</span>
+            {(["srgb", "display-p3", "adobe-rgb", "prophoto-rgb"] as const).map(
+              (profile) => (
+                <button
+                  key={profile}
+                  className={colorSpace === profile ? "active" : ""}
+                  onClick={() => setColorSpace(profile)}
+                >
+                  {profile === "srgb"
+                    ? "sRGB"
+                    : profile === "display-p3"
+                      ? "P3"
+                      : profile === "adobe-rgb"
+                        ? "Adobe RGB"
+                        : "ProPhoto"}
+                </button>
+              ),
+            )}
+          </div>
           {format !== "png" && (
             <AdjustSlider
               label="Quality"
@@ -3434,37 +4740,142 @@ function ExportDialog({
               placeholder="-LibreLux"
             />
           </label>
-        </Panel>
-        <Panel title="Image sizing">
-          <div className="choice-row">
-            <span>Scale</span>
-            {[25, 50, 75, 100].map((value) => (
+          <label className="export-field">
+            <span>Naming template</span>
+            <input
+              value={nameTemplate}
+              onChange={(event) => setNameTemplate(event.target.value)}
+              placeholder="{name}{suffix}"
+            />
+          </label>
+          <div className="naming-tokens">
+            {["{name}", "{date}", "{rating}", "{suffix}"].map((token) => (
               <button
-                key={value}
-                className={!longEdge && scale === value ? "active" : ""}
-                onClick={() => {
-                  setLongEdge(0);
-                  setScale(value);
-                }}
+                key={token}
+                onClick={() => setNameTemplate(`${nameTemplate}${token}`)}
               >
-                {value}%
+                {token}
               </button>
             ))}
           </div>
-          <label className="export-field">
-            <span>Long edge</span>
-            <input
-              type="number"
-              min="0"
-              max="30000"
-              value={longEdge || ""}
-              onChange={(event) =>
-                setLongEdge(Math.max(0, Number(event.target.value)))
-              }
-              placeholder="Original"
-            />
-            <em>px</em>
-          </label>
+        </Panel>
+        <Panel title="Image sizing">
+          <div className="sizing-modes">
+            {(
+              [
+                "percentage",
+                "dimensions",
+                "long",
+                "short",
+                "megapixels",
+              ] as const
+            ).map((mode) => (
+              <button
+                key={mode}
+                className={sizing === mode ? "active" : ""}
+                onClick={() => setSizing(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
+          {sizing === "percentage" && (
+            <div className="choice-row">
+              <span>Scale</span>
+              {[25, 50, 75, 100].map((value) => (
+                <button
+                  key={value}
+                  className={scale === value ? "active" : ""}
+                  onClick={() => {
+                    setScale(value);
+                  }}
+                >
+                  {value}%
+                </button>
+              ))}
+            </div>
+          )}
+          {sizing === "dimensions" && (
+            <div className="dimension-row">
+              <label className="export-field">
+                <span>Width</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="30000"
+                  value={width || ""}
+                  onChange={(event) =>
+                    setWidth(Math.max(0, Number(event.target.value)))
+                  }
+                  placeholder="Auto"
+                />
+                <em>px</em>
+              </label>
+              <label className="export-field">
+                <span>Height</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="30000"
+                  value={height || ""}
+                  onChange={(event) =>
+                    setHeight(Math.max(0, Number(event.target.value)))
+                  }
+                  placeholder="Auto"
+                />
+                <em>px</em>
+              </label>
+            </div>
+          )}
+          {sizing === "long" && (
+            <label className="export-field">
+              <span>Long edge</span>
+              <input
+                type="number"
+                min="0"
+                max="30000"
+                value={longEdge || ""}
+                onChange={(event) =>
+                  setLongEdge(Math.max(0, Number(event.target.value)))
+                }
+                placeholder="Original"
+              />
+              <em>px</em>
+            </label>
+          )}
+          {sizing === "short" && (
+            <label className="export-field">
+              <span>Short edge</span>
+              <input
+                type="number"
+                min="0"
+                max="30000"
+                value={shortEdge || ""}
+                onChange={(event) =>
+                  setShortEdge(Math.max(0, Number(event.target.value)))
+                }
+                placeholder="Original"
+              />
+              <em>px</em>
+            </label>
+          )}
+          {sizing === "megapixels" && (
+            <label className="export-field">
+              <span>Megapixels</span>
+              <input
+                type="number"
+                min="0"
+                max="500"
+                step=".1"
+                value={megapixels || ""}
+                onChange={(event) =>
+                  setMegapixels(Math.max(0, Number(event.target.value)))
+                }
+                placeholder="Original"
+              />
+              <em>MP</em>
+            </label>
+          )}
           <label className="export-field">
             <span>Resolution</span>
             <input
@@ -3525,12 +4936,80 @@ function ExportDialog({
               placeholder="Optional text"
             />
           </label>
+          <label className="export-field">
+            <span>Image mark</span>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) setWatermarkImage(URL.createObjectURL(file));
+              }}
+            />
+          </label>
+          {watermarkImage && (
+            <button
+              className="clear-watermark"
+              onClick={() => {
+                URL.revokeObjectURL(watermarkImage);
+                setWatermarkImage("");
+              }}
+            >
+              Remove image mark
+            </button>
+          )}
+          <AdjustSlider
+            label="Watermark opacity"
+            value={watermarkOpacity}
+            min={5}
+            max={100}
+            resetValue={82}
+            onChange={setWatermarkOpacity}
+          />
+          <div className="choice-row wrap">
+            <span>Position</span>
+            {(
+              [
+                "top-left",
+                "top-right",
+                "center",
+                "bottom-left",
+                "bottom-right",
+              ] as const
+            ).map((position) => (
+              <button
+                key={position}
+                className={watermarkPosition === position ? "active" : ""}
+                onClick={() => setWatermarkPosition(position)}
+              >
+                {position}
+              </button>
+            ))}
+          </div>
+          <div className="export-toggles">
+            <button
+              className={includeMetadata ? "active" : ""}
+              onClick={() => setIncludeMetadata(!includeMetadata)}
+            >
+              Metadata {includeMetadata ? "included" : "removed"}
+            </button>
+            <button
+              disabled={!includeMetadata}
+              className={includeCopyright ? "active" : ""}
+              onClick={() => setIncludeCopyright(!includeCopyright)}
+            >
+              Copyright {includeCopyright ? "included" : "removed"}
+            </button>
+          </div>
           <p className="panel-note">
             Descriptive metadata remains in the local catalog; browser exports
             avoid private location data by default.
           </p>
         </Panel>
         <DialogFooter>
+          <button className="secondary-button" onClick={onExportPackage}>
+            Original + settings
+          </button>
           <button className="secondary-button" onClick={() => setOpen(false)}>
             Cancel
           </button>
@@ -3558,11 +5037,20 @@ function LibraryWorkspace({
   gridSize,
 }: {
   photos: RuntimePhoto[];
-  filter: "all" | "flagged" | "rated" | "edited" | "rejected" | "duplicates";
+  filter:
+    | "all"
+    | "flagged"
+    | "rated"
+    | "edited"
+    | "rejected"
+    | "duplicates"
+    | "best";
   query: string;
   setQuery: (value: string) => void;
-  view: "grid" | "loupe" | "compare" | "survey";
-  setView: (view: "grid" | "loupe" | "compare" | "survey") => void;
+  view: "grid" | "loupe" | "compare" | "survey" | "people" | "map";
+  setView: (
+    view: "grid" | "loupe" | "compare" | "survey" | "people" | "map",
+  ) => void;
   selectedId: string | null;
   selectedIds: string[];
   toggleSelection: (id: string, additive?: boolean) => void;
@@ -3576,11 +5064,19 @@ function LibraryWorkspace({
   const visible =
     view === "loupe"
       ? photos.filter((photo) => photo.id === selectedId).slice(0, 1)
-      : view === "compare"
-        ? candidates.slice(0, 2)
-        : view === "survey"
-          ? candidates.slice(0, 6)
-          : photos;
+      : view === "people"
+        ? photos.filter((photo) => photo.cull.faces > 0)
+        : view === "map"
+          ? photos.filter(
+              (photo) =>
+                photo.metadata.latitude !== null &&
+                photo.metadata.longitude !== null,
+            )
+          : view === "compare"
+            ? candidates.slice(0, 2)
+            : view === "survey"
+              ? candidates.slice(0, 6)
+              : photos;
   const headings = {
     all: "All photos",
     flagged: "Picks",
@@ -3588,6 +5084,7 @@ function LibraryWorkspace({
     edited: "Edited",
     rejected: "Rejected",
     duplicates: "Duplicates",
+    best: "Assisted picks",
   };
   return (
     <div className="library-view">
@@ -3616,6 +5113,8 @@ function LibraryWorkspace({
               ["loupe", "Loupe"],
               ["compare", "Compare"],
               ["survey", "Survey"],
+              ["people", "People"],
+              ["map", "Map"],
             ] as const
           ).map(([value, label]) => (
             <button
@@ -3735,19 +5234,33 @@ function LibraryWorkspace({
             >
               <div className="thumb">
                 <img
-                  src={photo.url}
+                  src={photo.previewUrl}
                   alt=""
-                  style={{ filter: cssFilter(photo.adjustments) }}
+                  style={{
+                    filter: cssFilter(photo.adjustments, photo.processVersion),
+                  }}
                 />
                 {photo.flagged && <Flag className="pick" />}
                 {photo.rejected && <X className="reject" />}
                 {photo.virtualOf && <Columns2 className="virtual" />}
+                {photo.stackId && <b className="stack-badge">Stack</b>}
                 <i style={{ background: labelColors[photo.label] }} />
               </div>
               <strong>{photo.metadata.title || photo.name}</strong>
               <span>
+                {view === "people"
+                  ? `${photo.cull.faces} face${photo.cull.faces === 1 ? "" : "s"} · `
+                  : view === "map"
+                    ? `${photo.metadata.latitude?.toFixed(4)}, ${photo.metadata.longitude?.toFixed(4)} · `
+                    : ""}
                 {photo.folder} · {formatBytes(photo.size)}
               </span>
+              {filter === "best" && (
+                <small className="cull-score">
+                  Focus {Math.round(photo.cull.focus)} · Exposure{" "}
+                  {Math.round(photo.cull.exposure)} · Faces {photo.cull.faces}
+                </small>
+              )}
               <div className="stars">
                 {[1, 2, 3, 4, 5].map((n) => (
                   <Star key={n} className={n <= photo.rating ? "on" : ""} />
@@ -3794,6 +5307,10 @@ function EditorCanvas({
   retouchSize,
   retouchFeather,
   onRetouchSpot,
+  softProof,
+  proofProfile,
+  gamutWarnings,
+  allowFullResolution,
 }: {
   photo: RuntimePhoto;
   referencePhoto?: RuntimePhoto;
@@ -3827,15 +5344,150 @@ function EditorCanvas({
   retouchSize: number;
   retouchFeather: number;
   onRetouchSpot: (spot: RetouchSpot) => void;
+  softProof: boolean;
+  proofProfile: ColorSpace;
+  gamutWarnings: boolean;
+  allowFullResolution: boolean;
 }) {
   const a = photo.adjustments;
   const imageRef = useRef<HTMLImageElement>(null);
+  const [renderSource, setRenderSource] = useState(photo.previewUrl);
   const activeMask = photo.masks.find((mask) => mask.id === selectedMaskId);
   const [retouchSource, setRetouchSource] = useState<{
     x: number;
     y: number;
   } | null>(null);
-  useEffect(() => setRetouchSource(null), [retouchMode, photo.id]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!allowFullResolution)
+      return () => {
+        cancelled = true;
+      };
+    const full = new Image();
+    full.src = photo.url;
+    full
+      .decode()
+      .then(() => {
+        if (!cancelled) setRenderSource(photo.url);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [allowFullResolution, photo.id, photo.previewUrl, photo.url]);
+  const [customCrop, setCustomCrop] = useState({ width: 4, height: 3 });
+  const [guidedUpright, setGuidedUpright] = useState(false);
+  const [guideStart, setGuideStart] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const autoLevel = async () => {
+    const { canvas, pixels } = await readImagePixels(photo.url, 220);
+    let weightedAngle = 0;
+    let totalWeight = 0;
+    const luminance = (x: number, y: number) => {
+      const index = (y * canvas.width + x) * 4;
+      return (
+        0.2126 * pixels.data[index] +
+        0.7152 * pixels.data[index + 1] +
+        0.0722 * pixels.data[index + 2]
+      );
+    };
+    for (let y = 1; y < canvas.height - 1; y += 2) {
+      for (let x = 1; x < canvas.width - 1; x += 2) {
+        const gx = luminance(x + 1, y) - luminance(x - 1, y);
+        const gy = luminance(x, y + 1) - luminance(x, y - 1);
+        const weight = Math.hypot(gx, gy);
+        if (weight < 24) continue;
+        let lineAngle = (Math.atan2(gy, gx) * 180) / Math.PI + 90;
+        while (lineAngle > 90) lineAngle -= 180;
+        while (lineAngle < -90) lineAngle += 180;
+        if (Math.abs(lineAngle) < 22) {
+          weightedAngle += lineAngle * weight;
+          totalWeight += weight;
+        }
+      }
+    }
+    setAdjustment(
+      "rotation",
+      totalWeight
+        ? Math.max(-15, Math.min(15, -weightedAngle / totalWeight))
+        : 0,
+    );
+  };
+  const placeGuide = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!guidedUpright) return;
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - rect.left) / rect.width,
+      y: (event.clientY - rect.top) / rect.height,
+    };
+    if (!guideStart) {
+      setGuideStart(point);
+      return;
+    }
+    const angle =
+      (Math.atan2(point.y - guideStart.y, point.x - guideStart.x) * 180) /
+      Math.PI;
+    const desired = Math.abs(angle) > 45 ? (angle > 0 ? 90 : -90) : 0;
+    setAdjustment(
+      "rotation",
+      Math.max(-45, Math.min(45, a.rotation + desired - angle)),
+    );
+    setGuideStart(null);
+    setGuidedUpright(false);
+  };
+  const dragCropEdge = (
+    edge: "top" | "right" | "bottom" | "left",
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    event.stopPropagation();
+    const overlay = event.currentTarget.parentElement?.getBoundingClientRect();
+    if (!overlay) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const x = Math.max(
+      0,
+      Math.min(45, ((event.clientX - overlay.left) / overlay.width) * 100),
+    );
+    const y = Math.max(
+      0,
+      Math.min(45, ((event.clientY - overlay.top) / overlay.height) * 100),
+    );
+    const value =
+      edge === "left"
+        ? x
+        : edge === "right"
+          ? Math.max(
+              0,
+              Math.min(
+                45,
+                100 - ((event.clientX - overlay.left) / overlay.width) * 100,
+              ),
+            )
+          : edge === "top"
+            ? y
+            : Math.max(
+                0,
+                Math.min(
+                  45,
+                  100 - ((event.clientY - overlay.top) / overlay.height) * 100,
+                ),
+              );
+    const key =
+      `crop${edge[0].toUpperCase()}${edge.slice(1)}` as keyof Adjustments;
+    setAdjustment(key, value);
+    if (a.cropConstrain) {
+      const opposite =
+        edge === "left"
+          ? "cropRight"
+          : edge === "right"
+            ? "cropLeft"
+            : edge === "top"
+              ? "cropBottom"
+              : "cropTop";
+      setAdjustment(opposite, value);
+    }
+  };
   const ratios: [[number, string], ...[number, string][]] = [
     [0, "Original"],
     [1, "1:1"],
@@ -4146,16 +5798,35 @@ function EditorCanvas({
             style={{ transform: photoTransform }}
           />
         )}
+        {!showBefore && a.boundaryFill > 0 && (
+          <img
+            className="content-boundary-fill"
+            src={renderSource}
+            alt=""
+            aria-hidden="true"
+            style={{
+              filter: `${cssFilter(a, photo.processVersion)} blur(${Math.max(3, a.boundaryFill / 5)}px)`,
+              transform: `${photoTransform} scale(${1.08 + a.boundaryFill / 500})`,
+              opacity: 0.9,
+            }}
+          />
+        )}
         <img
           className="comparison-edited"
           ref={imageRef}
-          src={photo.url}
+          src={renderSource}
           alt={photo.name}
           style={{
-            filter: showBefore ? "none" : cssFilter(a),
+            filter: showBefore
+              ? "none"
+              : `${cssFilter(a, photo.processVersion)} ${softProof ? (proofProfile === "display-p3" ? "saturate(1.04)" : proofProfile === "adobe-rgb" ? "saturate(1.02) contrast(.99)" : proofProfile === "prophoto-rgb" ? "saturate(.97) contrast(.98)" : "") : ""}`,
             transform: photoTransform,
+            clipPath: `inset(${a.cropTop}% ${a.cropRight}% ${a.cropBottom}% ${a.cropLeft}%)`,
           }}
         />
+        {!showBefore && softProof && gamutWarnings && (
+          <GamutWarningOverlay photo={photo} />
+        )}
         {!showBefore &&
           photo.masks
             .filter((mask) => mask.visible)
@@ -4163,12 +5834,12 @@ function EditorCanvas({
               <img
                 key={mask.id}
                 className="local-adjustment"
-                src={photo.url}
+                src={renderSource}
                 alt=""
                 aria-hidden="true"
                 onClick={() => setSelectedMaskId(mask.id)}
                 style={{
-                  filter: `${cssFilter(a)} ${localFilter(mask.adjustments)}`,
+                  filter: `${cssFilter(a, photo.processVersion)} ${localFilter(mask.adjustments)}`,
                   transform: photoTransform,
                   WebkitMaskImage: mask.inverted
                     ? `linear-gradient(#fff 0 0),url(${mask.dataUrl})`
@@ -4205,8 +5876,8 @@ function EditorCanvas({
                   spot.mode === "redEye"
                     ? "saturate(.12) brightness(.38)"
                     : spot.mode === "heal" || spot.mode === "remove"
-                      ? `blur(${spot.feather / 55}px) ${cssFilter(a)}`
-                      : cssFilter(a),
+                      ? `blur(${spot.feather / 55}px) ${cssFilter(a, photo.processVersion)}`
+                      : cssFilter(a, photo.processVersion),
               }}
             />
           ))}
@@ -4269,11 +5940,11 @@ function EditorCanvas({
         {!showBefore && (a.chromatic > 0 || a.chromaticShift > 0) && (
           <img
             className="chromatic-preview"
-            src={photo.url}
+            src={renderSource}
             alt=""
             aria-hidden="true"
             style={{
-              filter: `${cssFilter(a)} hue-rotate(115deg)`,
+              filter: `${cssFilter(a, photo.processVersion)} hue-rotate(115deg)`,
               transform: `${photoTransform} translateX(${(a.chromatic + a.chromaticShift) / 15}px)`,
               opacity: Math.min(0.14, (a.chromatic + a.chromaticShift) / 800),
             }}
@@ -4324,9 +5995,33 @@ function EditorCanvas({
           />
         )}
         {cropMode && (
-          <div className={`crop-overlay overlay-${cropOverlay}`}>
+          <div
+            className={`crop-overlay overlay-${cropOverlay} ${guidedUpright ? "guided" : ""}`}
+            onClick={placeGuide}
+          >
             <div className="crop-grid" />
-            <nav>
+            {(["top", "right", "bottom", "left"] as const).map((edge) => (
+              <button
+                key={edge}
+                className={`crop-handle ${edge}`}
+                aria-label={`Drag ${edge} crop edge`}
+                onPointerDown={(event) => dragCropEdge(edge, event)}
+                onPointerMove={(event) =>
+                  event.currentTarget.hasPointerCapture(event.pointerId) &&
+                  dragCropEdge(edge, event)
+                }
+              />
+            ))}
+            {guideStart && (
+              <i
+                className="upright-guide-start"
+                style={{
+                  left: `${guideStart.x * 100}%`,
+                  top: `${guideStart.y * 100}%`,
+                }}
+              />
+            )}
+            <nav onClick={(event) => event.stopPropagation()}>
               <div className="crop-ratios">
                 {ratios.map(([ratio, label]) => (
                   <button
@@ -4337,6 +6032,52 @@ function EditorCanvas({
                     {label}
                   </button>
                 ))}
+              </div>
+              <div className="custom-crop-row">
+                <input
+                  aria-label="Custom crop width"
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={customCrop.width}
+                  onChange={(event) =>
+                    setCustomCrop((value) => ({
+                      ...value,
+                      width: Math.max(1, Number(event.target.value)),
+                    }))
+                  }
+                />
+                <span>:</span>
+                <input
+                  aria-label="Custom crop height"
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={customCrop.height}
+                  onChange={(event) =>
+                    setCustomCrop((value) => ({
+                      ...value,
+                      height: Math.max(1, Number(event.target.value)),
+                    }))
+                  }
+                />
+                <button
+                  className={
+                    Math.abs(
+                      a.cropRatio - customCrop.width / customCrop.height,
+                    ) < 0.001
+                      ? "active"
+                      : ""
+                  }
+                  onClick={() =>
+                    setAdjustment(
+                      "cropRatio",
+                      customCrop.width / customCrop.height,
+                    )
+                  }
+                >
+                  Custom
+                </button>
               </div>
               <div className="overlay-row">
                 {(
@@ -4365,6 +6106,61 @@ function EditorCanvas({
                 />
                 <span>{a.rotation.toFixed(1)}°</span>
               </label>
+              <div className="crop-smart-actions">
+                <button onClick={() => void autoLevel()}>Auto level</button>
+                <button
+                  className={guidedUpright ? "active" : ""}
+                  onClick={() => {
+                    setGuidedUpright(!guidedUpright);
+                    setGuideStart(null);
+                  }}
+                >
+                  Guided upright
+                </button>
+                <button
+                  className={a.cropConstrain ? "active" : ""}
+                  onClick={() =>
+                    setAdjustment("cropConstrain", a.cropConstrain ? 0 : 1)
+                  }
+                >
+                  Constrain
+                </button>
+                <button
+                  className={a.boundaryFill ? "active" : ""}
+                  onClick={() =>
+                    setAdjustment("boundaryFill", a.boundaryFill ? 0 : 45)
+                  }
+                >
+                  Boundary fill
+                </button>
+              </div>
+              <label>
+                Anamorphic correction{" "}
+                <input
+                  type="range"
+                  min="-50"
+                  max="50"
+                  step="1"
+                  value={a.anamorphic}
+                  onChange={(event) =>
+                    setAdjustment("anamorphic", Number(event.target.value))
+                  }
+                />
+                <span>
+                  {a.anamorphic > 0 ? "+" : ""}
+                  {Math.round(a.anamorphic)}
+                </span>
+              </label>
+              <button
+                className="crop-reset"
+                onClick={() => {
+                  (
+                    ["cropTop", "cropRight", "cropBottom", "cropLeft"] as const
+                  ).forEach((key) => setAdjustment(key, 0));
+                }}
+              >
+                Reset crop edges
+              </button>
               <button className="crop-done" onClick={() => setCropMode(false)}>
                 Done
               </button>
@@ -4422,6 +6218,16 @@ function LibraryInspector({
   const setMeta = (key: keyof PhotoMetadata, value: string | string[]) =>
     update((p) => ({ ...p, metadata: { ...p.metadata, [key]: value } }));
   const sidecarRef = useRef<HTMLInputElement>(null);
+  const relinkRef = useRef<HTMLInputElement>(null);
+  const [keywordDraft, setKeywordDraft] = useState("");
+  const keywordSuggestions = [
+    "People > Portrait",
+    "Places > Travel",
+    "Nature > Landscape",
+    "Events > Family",
+    "client ≈ customer",
+    "mono ≈ black and white",
+  ].filter((item) => !photo.metadata.keywords.includes(item));
   const exportXmp = () => {
     const payload = encodeURIComponent(
       JSON.stringify({
@@ -4713,13 +6519,68 @@ function LibraryInspector({
         <input
           className="keyword-input"
           placeholder="Type a keyword and press Enter"
+          value={keywordDraft}
+          onChange={(event) => setKeywordDraft(event.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               const value = e.currentTarget.value.trim();
               if (value && !photo.metadata.keywords.includes(value))
                 setMeta("keywords", [...photo.metadata.keywords, value]);
-              e.currentTarget.value = "";
+              setKeywordDraft("");
             }
+          }}
+        />
+        <div className="keyword-suggestions">
+          {keywordSuggestions.slice(0, 4).map((keyword) => (
+            <button
+              key={keyword}
+              onClick={() =>
+                setMeta("keywords", [...photo.metadata.keywords, keyword])
+              }
+            >
+              + {keyword}
+            </button>
+          ))}
+        </div>
+        <p className="panel-note">
+          Use “Parent &gt; Child” for hierarchy and “term ≈ synonym” for
+          searchable synonyms.
+        </p>
+      </Panel>
+      <Panel
+        title="Original file"
+        open={photo.missing}
+        badge={photo.missing ? "Missing" : "Verified"}
+      >
+        <p className="panel-note">
+          {photo.missing
+            ? "The catalog record is intact, but its local original needs to be relinked."
+            : "The locally stored original matches the catalog record."}
+        </p>
+        <button
+          className="relink-button"
+          onClick={() => relinkRef.current?.click()}
+        >
+          {photo.missing ? "Relink original" : "Replace original"}
+        </button>
+        <input
+          ref={relinkRef}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            URL.revokeObjectURL(photo.url);
+            update((current) => ({
+              ...current,
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              blob: file,
+              url: URL.createObjectURL(file),
+              missing: false,
+            }));
           }}
         />
       </Panel>
@@ -4792,6 +6653,21 @@ function DevelopPanels({
   updateRetouchSpot,
   deleteRetouchSpot,
   clearRetouchSpots,
+  userPresets,
+  createUserPreset,
+  updateUserPreset,
+  deleteUserPreset,
+  exportUserPresets,
+  importUserPresets,
+  chooseUserPreset,
+  applyPresetToSelection,
+  applyAdaptivePreset,
+  softProof,
+  setSoftProof,
+  proofProfile,
+  setProofProfile,
+  gamutWarnings,
+  setGamutWarnings,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -4839,10 +6715,41 @@ function DevelopPanels({
   updateRetouchSpot: (id: string, patch: Partial<RetouchSpot>) => void;
   deleteRetouchSpot: (id: string) => void;
   clearRetouchSpots: () => void;
+  userPresets: UserPreset[];
+  createUserPreset: () => void;
+  updateUserPreset: (id: string, patch: Partial<UserPreset>) => void;
+  deleteUserPreset: (id: string) => void;
+  exportUserPresets: () => void;
+  importUserPresets: () => void;
+  chooseUserPreset: (preset: UserPreset) => void;
+  applyPresetToSelection: (settings: Partial<Adjustments>) => void;
+  applyAdaptivePreset: (kind: "subject" | "sky" | "portrait") => Promise<void>;
+  softProof: boolean;
+  setSoftProof: (value: boolean) => void;
+  proofProfile: ColorSpace;
+  setProofProfile: (value: ColorSpace) => void;
+  gamutWarnings: boolean;
+  setGamutWarnings: (value: boolean) => void;
 }) {
   const a = photo.adjustments;
   const selectedMask = photo.masks.find((mask) => mask.id === selectedMaskId);
   const [combineMaskId, setCombineMaskId] = useState("");
+  const dragCurvePoint = (
+    key: "shadows" | "midtones" | "highlights",
+    event: React.PointerEvent<SVGCircleElement>,
+  ) => {
+    const svg = event.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const rect = svg.getBoundingClientRect();
+    const y = ((event.clientY - rect.top) / rect.height) * 90;
+    const base = key === "shadows" ? 88 : key === "midtones" ? 49 : 4;
+    setCurveAdjustment(
+      "rgb",
+      key,
+      Math.max(-100, Math.min(100, (base - y) * 4)),
+    );
+  };
   const combineMasks = async (mode: "add" | "subtract" | "intersect") => {
     if (!selectedMask || !combineMaskId) return;
     const sourceMask = photo.masks.find((mask) => mask.id === combineMaskId);
@@ -4902,6 +6809,100 @@ function DevelopPanels({
           Reset
         </button>
       </div>
+      <Panel
+        title="My presets"
+        badge={userPresets.length ? `${userPresets.length}` : "Local"}
+        open={false}
+      >
+        <div className="preset-manager-actions">
+          <button onClick={createUserPreset}>
+            <Plus /> Save current
+          </button>
+          <button onClick={importUserPresets}>Import</button>
+          <button onClick={exportUserPresets} disabled={!userPresets.length}>
+            Export
+          </button>
+        </div>
+        <div className="adaptive-presets">
+          <span>Adaptive</span>
+          <button onClick={() => void applyAdaptivePreset("subject")}>
+            Subject
+          </button>
+          <button onClick={() => void applyAdaptivePreset("sky")}>Sky</button>
+          <button onClick={() => void applyAdaptivePreset("portrait")}>
+            Portrait
+          </button>
+        </div>
+        <div className="user-preset-list">
+          {userPresets.map((preset) => {
+            const compatible = Object.keys(preset.settings).filter(
+              (key) => key in defaults,
+            ).length;
+            const preview = {
+              ...a,
+              ...preset.settings,
+              hsl: preset.settings.hsl ?? a.hsl,
+              bwMix: preset.settings.bwMix ?? a.bwMix,
+              curves: preset.settings.curves ?? a.curves,
+            };
+            return (
+              <details key={preset.id}>
+                <summary>
+                  <img
+                    src={photo.previewUrl}
+                    alt=""
+                    style={{ filter: cssFilter(preview) }}
+                  />
+                  <span>
+                    <strong>{preset.name}</strong>
+                    <small>
+                      {preset.group} · {compatible} compatible settings
+                    </small>
+                  </span>
+                </summary>
+                <label className="meta-field">
+                  <span>Name</span>
+                  <input
+                    value={preset.name}
+                    onChange={(event) =>
+                      updateUserPreset(preset.id, { name: event.target.value })
+                    }
+                  />
+                </label>
+                <label className="meta-field">
+                  <span>Folder</span>
+                  <input
+                    value={preset.group}
+                    onChange={(event) =>
+                      updateUserPreset(preset.id, { group: event.target.value })
+                    }
+                  />
+                </label>
+                <div className="preset-row-actions">
+                  <button onClick={() => chooseUserPreset(preset)}>
+                    Preview
+                  </button>
+                  <button
+                    onClick={() =>
+                      updateUserPreset(preset.id, { settings: { ...a } })
+                    }
+                  >
+                    Update
+                  </button>
+                  <button
+                    onClick={() => applyPresetToSelection(preset.settings)}
+                  >
+                    Apply to selected
+                  </button>
+                  <button onClick={() => deleteUserPreset(preset.id)}>
+                    Delete
+                  </button>
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      </Panel>
       <Panel title="Light">
         <AdjustSlider
           label="Exposure"
@@ -4943,7 +6944,39 @@ function DevelopPanels({
               className="active"
               d={`M0 ${88 - a.curves.rgb.shadows / 4} C52 ${62 - a.curves.rgb.midtones / 5} 91 ${49 - a.curves.rgb.midtones / 4} S150 ${24 - a.curves.rgb.highlights / 5} 200 ${4 - a.curves.rgb.highlights / 5}`}
             />
-            <circle cx="91" cy={49 - a.curves.rgb.midtones / 4} r="3" />
+            <circle
+              className="curve-point"
+              cx="28"
+              cy={88 - a.curves.rgb.shadows / 4}
+              r="4"
+              onPointerDown={(event) => dragCurvePoint("shadows", event)}
+              onPointerMove={(event) =>
+                event.currentTarget.hasPointerCapture(event.pointerId) &&
+                dragCurvePoint("shadows", event)
+              }
+            />
+            <circle
+              className="curve-point"
+              cx="91"
+              cy={49 - a.curves.rgb.midtones / 4}
+              r="4"
+              onPointerDown={(event) => dragCurvePoint("midtones", event)}
+              onPointerMove={(event) =>
+                event.currentTarget.hasPointerCapture(event.pointerId) &&
+                dragCurvePoint("midtones", event)
+              }
+            />
+            <circle
+              className="curve-point"
+              cx="172"
+              cy={4 - a.curves.rgb.highlights / 4}
+              r="4"
+              onPointerDown={(event) => dragCurvePoint("highlights", event)}
+              onPointerMove={(event) =>
+                event.currentTarget.hasPointerCapture(event.pointerId) &&
+                dragCurvePoint("highlights", event)
+              }
+            />
           </svg>
           <div>
             <span>Point curve</span>
@@ -5225,6 +7258,49 @@ function DevelopPanels({
           value={a.gradingBalance}
           onChange={(v) => setAdjustment("gradingBalance", v)}
         />
+      </Panel>
+      <Panel
+        title="Soft proofing"
+        badge={softProof ? proofProfile.toUpperCase() : "Off"}
+        open={false}
+      >
+        <div className="choice-row wrap">
+          <span>Proof profile</span>
+          {(["srgb", "display-p3", "adobe-rgb", "prophoto-rgb"] as const).map(
+            (profile) => (
+              <button
+                key={profile}
+                className={proofProfile === profile ? "active" : ""}
+                onClick={() => {
+                  setProofProfile(profile);
+                  setSoftProof(true);
+                }}
+              >
+                {profile
+                  .replace("-rgb", " RGB")
+                  .replace("display-p3", "Display P3")}
+              </button>
+            ),
+          )}
+        </div>
+        <div className="proof-actions">
+          <button
+            className={softProof ? "active" : ""}
+            onClick={() => setSoftProof(!softProof)}
+          >
+            Soft proof {softProof ? "on" : "off"}
+          </button>
+          <button
+            className={gamutWarnings ? "active" : ""}
+            disabled={!softProof}
+            onClick={() => setGamutWarnings(!gamutWarnings)}
+          >
+            Gamut warning
+          </button>
+        </div>
+        <p className="panel-note">
+          Magenta marks pixels near clipping or beyond the selected proof gamut.
+        </p>
       </Panel>
       <Panel title="Profiles & calibration" open={false}>
         <div className="profile-strip">
