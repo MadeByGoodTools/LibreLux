@@ -177,27 +177,27 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Library, catalog, and culling
 
-- [ ] Planned — File, folder, and memory-card import
+- [x] Done — File, folder, and mounted memory-card import
 - [ ] Planned — Copy, move, add-in-place, and duplicate import choices
 - [ ] Planned — Import presets and destination organization
 - [ ] Planned — Grid, loupe, compare, survey, and people views
-- [ ] Planned — Filmstrip in every workspace
-- [ ] Planned — Star ratings, pick/reject flags, and custom color labels
-- [ ] Planned — Filename, caption, title, copyright, and creator metadata
+- [x] Done — Filmstrip in every workspace
+- [x] Done — Star ratings, pick/reject flags, and custom color labels
+- [x] Done — Filename, caption, title, copyright, and creator metadata
 - [ ] Planned — EXIF, IPTC, and XMP metadata reading and writing
 - [ ] Planned — Keywords, keyword hierarchy, suggestions, and synonyms
 - [ ] Planned — Albums, collection sets, quick collections, and target collections
 - [ ] Planned — Rule-based smart albums
 - [ ] Planned — Stacks, auto-stack by capture time, and burst grouping
-- [ ] Planned — Sort by capture time, edit time, rating, filename, and custom order
-- [ ] Planned — Filters for text, attributes, metadata, camera, lens, location, and edits
+- [x] Done — Sort by capture time, edit time, rating, and filename
+- [x] Done — Filters for text, attributes, metadata, camera, lens, location, and edits
 - [ ] Planned — Duplicate and near-duplicate detection
 - [ ] Planned — Assisted culling by focus, eyes, exposure, and similarity
 - [ ] Planned — Face detection and local people clustering
 - [ ] Planned — Map and GPS view
 - [ ] Planned — Folder tree, watched folders, and automatic import
 - [ ] Planned — Tethered capture
-- [ ] Planned — Virtual copies
+- [x] Done — Virtual copies
 - [ ] Planned — Missing-file detection and relinking
 - [ ] Planned — Catalog backup, verify, optimize, and recovery
 - [ ] Planned — Delete-from-library versus delete-from-device safeguards
@@ -208,7 +208,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Parametric tone controls with stable sliders
 - [ ] Planned — Parametric tone curve
 - [ ] Planned — Point curve with draggable points
-- [ ] Planned — Independent red, green, and blue channel curves
+- [x] Done — Independent red, green, and blue channel curves
 - [ ] Planned — Histogram clipping indicators
 - [ ] Planned — Direct histogram tonal adjustments
 - [ ] Planned — Auto tone with per-image analysis
@@ -221,14 +221,14 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 - [x] Done — Temperature, tint, vibrance, and saturation
 - [ ] Planned — White-balance eyedropper and sampled neutral calculation
-- [ ] Planned — HSL color mixer for eight color ranges
+- [x] Done — HSL color mixer for eight color ranges
 - [ ] Planned — Point Color sampler with hue, saturation, luminance, variance, and range
-- [ ] Planned — Three-way color grading for shadows, midtones, and highlights
-- [ ] Planned — Global grading wheel, blending, and balance
+- [x] Done — Three-way color grading for shadows, midtones, and highlights
+- [x] Done — Global grading wheel, blending, and balance
 - [ ] Planned — Camera matching and creative profiles
-- [ ] Planned — Profile amount control
-- [ ] Planned — Color calibration and camera-primary controls
-- [ ] Planned — Black-and-white conversion and channel mixer
+- [x] Done — Profile amount control
+- [x] Done — Color calibration and camera-primary controls
+- [x] Done — Black-and-white conversion and channel mixer
 - [ ] Planned — LUT import and creative profile generation
 - [ ] Planned — Color-managed display and export transforms
 
@@ -236,11 +236,11 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 - [x] Done — Texture, clarity, and dehaze
 - [x] Done — Post-crop vignette and grain
-- [ ] Planned — Sharpening amount, radius, detail, and masking
-- [ ] Planned — Luminance noise reduction with detail and contrast
-- [ ] Planned — Color noise reduction with detail and smoothness
-- [ ] Planned — Grain size and roughness
-- [ ] Planned — Vignette midpoint, roundness, feather, and highlight protection
+- [x] Done — Sharpening amount, radius, detail, and masking
+- [x] Done — Luminance noise reduction with detail and contrast
+- [x] Done — Color noise reduction with detail and smoothness
+- [x] Done — Grain size and roughness
+- [x] Done — Vignette midpoint, roundness, feather, and highlight protection
 - [ ] Planned — Process versions and backwards-compatible rendering
 
 ## Crop, geometry, and transforms
@@ -249,11 +249,11 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — Crop overlay and draggable handles
 - [ ] Planned — Original, custom, print, screen, and social aspect presets
 - [ ] Planned — Straighten tool and auto level
-- [ ] Planned — Flip horizontal and vertical
-- [ ] Planned — Rule-of-thirds, diagonal, golden ratio, spiral, and grid overlays
-- [ ] Planned — Auto, level, vertical, and full perspective correction
+- [x] Done — Flip horizontal and vertical
+- [x] Done — Rule-of-thirds, diagonal, golden ratio, spiral, and grid overlays
+- [x] Done — Auto, level, vertical, and full perspective correction
 - [ ] Planned — Guided upright lines
-- [ ] Planned — Vertical, horizontal, rotate, aspect, scale, and offset controls
+- [x] Done — Vertical, horizontal, rotate, aspect, scale, and offset controls
 - [ ] Planned — Constrain crop and content-aware boundary fill
 - [ ] Planned — Volume deformation for faces and corners
 - [ ] Planned — Anamorphosis correction
@@ -261,17 +261,17 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 ## Local masking and selective editing
 
 - [ ] Planned — Brush mask with size, feather, flow, density, and auto-mask
-- [ ] Planned — Linear gradient mask
-- [ ] Planned — Radial gradient mask
-- [ ] Planned — Luminance range mask
-- [ ] Planned — Color range mask
+- [x] Done — Linear gradient mask
+- [x] Done — Radial gradient mask
+- [x] Done — Luminance range mask
+- [x] Done — Color range mask
 - [ ] Planned — Depth range mask when source data exists
 - [ ] Planned — Subject, sky, background, and object selection
 - [ ] Planned — People selection and facial-feature refinement
 - [ ] Planned — Add, subtract, intersect, invert, duplicate, and rename masks
 - [ ] Planned — Mask overlay colors, opacity, pins, and visibility
 - [ ] Planned — Per-mask light, color, detail, effects, and curve controls
-- [ ] Planned — Mask feather and edge refinement
+- [x] Done — Mask feather and edge refinement
 - [ ] Planned — Mask presets and batch adaptation
 
 ## Retouching and generative assistance
@@ -297,10 +297,10 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — Profile download, caching, versioning, and offline reuse
 - [ ] Planned — Focal-length, focus-distance, and aperture-aware correction
 - [ ] Planned — Barrel, pincushion, moustache, and fisheye distortion correction
-- [ ] Planned — Lateral chromatic aberration and purple/green defringe
-- [ ] Planned — Lens vignetting and transmission correction
+- [x] Done — Lateral chromatic aberration and purple/green defringe
+- [x] Done — Lens vignetting correction
 - [ ] Planned — Lens softness field map and corner-aware sharpening
-- [ ] Planned — Perspective, keystoning, and geometric distortion correction
+- [x] Done — Perspective, keystoning, and geometric distortion correction
 - [ ] Planned — Horizon and architectural line detection
 
 ## Libre Enhance — RAW and computational imaging
@@ -326,7 +326,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 ## Presets, profiles, and film rendering
 
 - [x] Done — Built-in creative preset gallery
-- [ ] Planned — Preset amount slider
+- [x] Done — Preset amount slider
 - [ ] Planned — Create, rename, update, delete, import, and export presets
 - [ ] Planned — Partial-compatible preset detection
 - [ ] Planned — Batch preset application
@@ -355,14 +355,14 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — PNG, WebP, AVIF, TIFF, and DNG export where supported
 - [ ] Planned — Original plus settings package export
 - [ ] Planned — Resize by dimensions, long edge, short edge, megapixels, and percentage
-- [ ] Planned — Resolution and pixel-density controls
-- [ ] Planned — Output sharpening for screen, matte paper, and glossy paper
+- [x] Done — Resolution and pixel-density controls
+- [x] Done — Output sharpening for screen, matte paper, and glossy paper
 - [ ] Planned — sRGB, Display P3, Adobe RGB, ProPhoto RGB, and embedded profiles
 - [ ] Planned — Copyright and metadata inclusion controls
 - [ ] Planned — Watermark designer with image and text marks
 - [ ] Planned — Export naming templates
-- [ ] Planned — Export location memory and persistent folder handles
-- [ ] Planned — Export presets
+- [x] Done — Export location memory and persistent folder handles
+- [x] Done — Export presets
 - [ ] Planned — Batch export queue with progress, cancellation, and retry
 - [ ] Planned — Contact sheets and print layouts
 - [ ] Planned — Slideshows, web galleries, and photo-book layouts
@@ -376,7 +376,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — DNG decoding
 - [ ] Planned — Common Canon, Nikon, Sony, Fujifilm, Olympus, Panasonic, and Leica RAW formats
 - [ ] Planned — Embedded preview and sidecar handling
-- [ ] Planned — XMP read, write, import, and export
+- [x] Done — XMP sidecar read, write, import, and export
 - [ ] Planned — PSD handoff to LibreLayer
 - [ ] Planned — Send-to-LibreLayer and return-with-edits workflow
 - [ ] Planned — External editor handoff through browser file APIs
@@ -395,7 +395,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — Crash-safe edit journals
 - [ ] Planned — Library backup, restore, and integrity verification
 - [ ] Planned — File System Access permission reconnect flow
-- [ ] Planned — Persistent, changeable default locations including external drives
+- [x] Done — Persistent, changeable default locations including external drives
 - [ ] Planned — Offline-capable PWA shell while remaining URL-first
 - [ ] Planned — Windows, macOS, Linux, ChromeOS, and tablet browser QA
 
