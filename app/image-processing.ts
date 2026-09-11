@@ -191,6 +191,51 @@ export function applyDepthAwareLensBlur(
   context.restore();
 }
 
+export function applyFilmGrain(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  amount: number,
+  size: number,
+  roughness: number,
+  stockSample = 0,
+) {
+  if (amount <= 0) return;
+  const image = context.getImageData(0, 0, width, height);
+  const resolutionScale = Math.max(
+    0.65,
+    Math.min(3, Math.sqrt((width * height) / 12_000_000)),
+  );
+  const cell = Math.max(1, Math.round((1 + size / 32) * resolutionScale));
+  let seed = (0x9e3779b9 ^ (stockSample * 2654435761)) >>> 0;
+  const random = () => {
+    seed ^= seed << 13;
+    seed ^= seed >>> 17;
+    seed ^= seed << 5;
+    return (seed >>> 0) / 4294967295;
+  };
+  const strength = (amount / 100) * (5 + roughness / 7);
+  for (let y = 0; y < height; y += cell) {
+    for (let x = 0; x < width; x += cell) {
+      const noise = (random() + random() + random() - 1.5) * strength;
+      for (let py = y; py < Math.min(height, y + cell); py++)
+        for (let px = x; px < Math.min(width, x + cell); px++) {
+          const offset = (py * width + px) * 4;
+          const luminance =
+            image.data[offset] * 0.2126 +
+            image.data[offset + 1] * 0.7152 +
+            image.data[offset + 2] * 0.0722;
+          const midtoneWeight = 0.38 + (1 - Math.abs(luminance / 255 - 0.5) * 2) * 0.62;
+          for (let channel = 0; channel < 3; channel++)
+            image.data[offset + channel] = clampByte(
+              image.data[offset + channel] + noise * midtoneWeight,
+            );
+        }
+    }
+  }
+  context.putImageData(image, 0, 0);
+}
+
 export function estimateGpuBudget(deviceMemory = 4) {
   const budgetMb = Math.max(96, Math.min(1024, deviceMemory * 128));
   const maxPixels = Math.floor((budgetMb * 1024 * 1024) / 20);

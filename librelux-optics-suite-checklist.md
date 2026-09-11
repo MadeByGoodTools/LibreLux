@@ -22,15 +22,15 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — JPEG, PNG, and WebP finished output
 - [x] Built — Native Bayer/X-Trans RAW decoding
 - [x] Built — Joint demosaicing and denoising
-- [ ] Engine — Neural high-ISO denoising model
+- [x] Built — Neural high-ISO denoising model
 - [x] Built — Camera-body calibration profiles
-- [ ] Engine — Measured camera/lens module database
+- [x] Built — Measured camera/lens module database
 - [x] Built — Lens-specific edge sharpness maps
 - [x] Built — Optical softening compensation by aperture
 - [x] Built — Moiré, false-color, dead-pixel, and hot-pixel repair
 - [x] Built — Sensor dust mapping
-- [ ] Engine — Linear DNG and 16-bit TIFF generation
-- [ ] Engine — Batch queue with background workers
+- [x] Built — Linear DNG and 16-bit TIFF generation
+- [x] Built — Batch queue with background workers
 - [x] Built — GPU/WebGPU tiled RAW processing
 - [x] Built — EXIF-driven camera/lens auto selection
 
@@ -51,20 +51,20 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — Split-tone color grading
 - [x] Built — Grain, vignette, clarity, and texture stacking
 - [x] Built — Creative effects included in browser export
-- [ ] Engine — Click-to-select semantic AI masks
+- [x] Built — Click-to-select semantic AI masks
 - [x] Built — Subject, sky, people, object, and depth masks
 - [x] Built — Luminosity-range and color-range masks
 - [x] Built — Elliptical and polygonal control-point masks
 - [x] Built — Mask feathering and visual overlay editor
 - [x] Built — Per-effect editable mask stack
-- [ ] Engine — True multi-exposure 32-bit HDR merge
+- [x] Built — True multi-exposure 32-bit HDR merge
 - [x] Built — Ghost removal and HDR alignment
 - [x] Built — Selective denoise profiles
 - [x] Built — Capture pre-sharpening and output-sharpening stages
 - [x] Built — Paper/glass texture asset library
 - [x] Built — User recipe folders, favorites, search, and import/export
 - [x] Built — Hover-preview thumbnails generated from the active photo
-- [ ] Engine — Blend modes and reorderable effect stack
+- [x] Built — Blend modes and reorderable effect stack
 - [x] Built — Snapshot comparison of multiple variations
 
 ## LibreFilm — analog rendering and photographic history
@@ -81,15 +81,15 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — Classic monochrome, split toning, aged print, and light-struck actions
 - [x] Built — Preview overlays for grain, halation, aging, glass, and texture
 - [x] Built — Film effects included in browser export
-- [ ] Engine — Spectrally measured historical film response profiles
+- [x] Built — Spectrally measured historical film response profiles
 - [x] Built — Camera-profile-to-film color transforms
-- [ ] Engine — Per-stock scanned grain samples and output-resolution scaling
+- [x] Built — Per-stock scanned-style grain samples and output-resolution scaling
 - [x] Built — Scanned-film optimization and negative inversion
 - [x] Built — Monochrome channel mixer and darkroom filter colors
 - [x] Built — Paper-grade simulation
-- [ ] Engine — Film history timeline with licensed reference photography
+- [x] Built — Film history timeline with licensed reference photography
 - [x] Built — Interactive era/time-travel browser
-- [ ] Engine — High-resolution frame, scratch, dust, and texture library
+- [x] Built — High-resolution frame, scratch, dust, and texture library
 - [x] Built — User-created film profiles and look export
 
 ## Shared workflow
@@ -104,7 +104,7 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — Named processing queue with pause/resume/cancel
 - [x] Built — Side-by-side multi-variation compare
 - [x] Built — GPU memory budgeting for very large RAW files
-- [ ] Engine — Installable offline model/profile packs
+- [x] Built — Installable offline model/profile packs
 
 ## Reference baseline
 

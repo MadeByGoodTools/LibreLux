@@ -9,6 +9,7 @@ type PreviewResult = {
 type QueueItem = {
   source: Blob;
   maxEdge: number;
+  options: { mime: string; quality: number; strength: number };
   resolve: (result: PreviewResult) => void;
   reject: (error: Error) => void;
 };
@@ -26,9 +27,23 @@ class ImageWorkerPool {
     }));
   }
 
-  run(source: Blob, maxEdge: number) {
+  run(
+    source: Blob,
+    maxEdge: number,
+    options: Partial<QueueItem["options"]> = {},
+  ) {
     return new Promise<PreviewResult>((resolve, reject) => {
-      this.queue.push({ source, maxEdge, resolve, reject });
+      this.queue.push({
+        source,
+        maxEdge,
+        options: {
+          mime: options.mime ?? "image/jpeg",
+          quality: options.quality ?? 0.84,
+          strength: options.strength ?? 0.32,
+        },
+        resolve,
+        reject,
+      });
       void this.pump();
     });
   }
@@ -58,7 +73,7 @@ class ImageWorkerPool {
           reject(new Error("Image worker failed"));
         };
         slot.worker.postMessage(
-          { bitmap, maxEdge: item.maxEdge, strength: 0.32 },
+          { bitmap, maxEdge: item.maxEdge, ...item.options },
           [bitmap],
         );
       });
@@ -74,10 +89,14 @@ class ImageWorkerPool {
 
 let pool: ImageWorkerPool | null = null;
 
-export function createPreviewInWorker(source: Blob, maxEdge: number) {
+export function createPreviewInWorker(
+  source: Blob,
+  maxEdge: number,
+  options: Partial<QueueItem["options"]> = {},
+) {
   if (!pool) {
     const cores = navigator.hardwareConcurrency || 4;
     pool = new ImageWorkerPool(Math.max(1, Math.min(4, Math.floor(cores / 2))));
   }
-  return pool.run(source, maxEdge);
+  return pool.run(source, maxEdge, options);
 }

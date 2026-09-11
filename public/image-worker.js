@@ -121,7 +121,13 @@ async function gpuRepairAndSharpen(pixels, width, height, strength) {
 }
 
 self.onmessage = async (event) => {
-  const { bitmap, maxEdge, strength = 0.32 } = event.data;
+  const {
+    bitmap,
+    maxEdge,
+    strength = 0.32,
+    mime = "image/jpeg",
+    quality = 0.84,
+  } = event.data;
   try {
     const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
     const width = Math.max(1, Math.round(bitmap.width * scale));
@@ -141,8 +147,8 @@ self.onmessage = async (event) => {
     }
     context.putImageData(pixels, 0, 0);
     const blob = await canvas.convertToBlob({
-      type: "image/jpeg",
-      quality: 0.84,
+      type: mime,
+      quality,
     });
     self.postMessage({ blob, width, height, engine, tiled: true });
   } catch (error) {

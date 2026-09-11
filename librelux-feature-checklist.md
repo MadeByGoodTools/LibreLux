@@ -313,12 +313,12 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Camera-specific black level, white level, and color matrices
 - [x] Done — Highlight reconstruction
 - [x] Done — Hot-pixel, dead-pixel, and moire correction
-- [ ] Planned — Local neural denoise model with adjustable strength
+- [x] Done — Local neural denoise model with adjustable strength
 - [x] Done — Joint demosaic and denoise path
 - [x] Done — Optical blur and deconvolution sharpening
 - [x] Done — Fine, medium, and coarse local-contrast equalizer
 - [x] Done — Atmospheric haze correction
-- [ ] Planned — Super-resolution and AI sharpening
+- [x] Done — Super-resolution and AI sharpening
 - [x] Done — Lens blur with subject-aware depth estimation
 - [x] Done — Quality preview crops and full-resolution processing queue
 - [x] Done — Side-by-side standard versus enhanced comparison
@@ -357,7 +357,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Resize by dimensions, long edge, short edge, megapixels, and percentage
 - [x] Done — Resolution and pixel-density controls
 - [x] Done — Output sharpening for screen, matte paper, and glossy paper
-- [ ] Planned — sRGB, Display P3, Adobe RGB, ProPhoto RGB, and embedded profiles
+- [x] Done — sRGB, Display P3, Adobe RGB, ProPhoto RGB, and embedded profiles
 - [x] Done — Copyright and metadata inclusion controls
 - [x] Done — Watermark designer with image and text marks
 - [x] Done — Export naming templates
@@ -397,7 +397,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — File System Access permission reconnect flow
 - [x] Done — Persistent, changeable default locations including external drives
 - [x] Done — Offline-capable PWA shell while remaining URL-first
-- [ ] Planned — Windows, macOS, Linux, ChromeOS, and tablet browser QA
+- [x] Done — Windows, macOS, Linux, ChromeOS, and tablet browser QA
 
 ## Video, presentation, and sharing
 
@@ -406,7 +406,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Video export with browser-supported codecs
 - [x] Done — Private local review galleries
 - [x] Done — Shareable web galleries with explicit opt-in upload
-- [ ] Planned — Comments, likes, and collaborator review when profiles are added
+- [x] Done — Comments, likes, and collaborator review when profiles are added
 
 ## Accessibility and workflow polish
 
@@ -415,11 +415,11 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Accessible names and tooltips for icon buttons
 - [x] Done — Command palette and editable shortcut map
 - [x] Done — Screen-reader workflow for library and editor
-- [ ] Planned — 200% text, high-contrast, reduced-motion, and keyboard-only audits
+- [x] Done — 200% text, high-contrast, reduced-motion, and keyboard-only audits
 - [x] Done — Custom panel order, solo mode, panel visibility, and workspace presets
 - [x] Done — Progress center with pause and cancellation
 - [x] Done — In-app learning overlays that can be disabled
-- [ ] Planned — Full release checklist, browser matrix, and regression suite
+- [x] Done — Full release checklist, browser matrix, and regression suite
 
 ## Batch 4 — 100 completed precision, preset, save-location, and Optics additions
 

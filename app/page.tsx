@@ -15,6 +15,7 @@ import {
   FolderOpen,
   FolderPlus,
   Grid3X3,
+  Heart,
   ImagePlus,
   Info,
   Keyboard,
@@ -49,7 +50,6 @@ import {
   useState,
 } from "react";
 import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import * as exifr from "exifr";
 import {
   decodeEditableSource,
@@ -59,11 +59,35 @@ import {
 } from "./image-codecs";
 import {
   applyDepthAwareLensBlur,
+  applyFilmGrain,
   applyTiledDetail,
   estimateGpuBudget,
 } from "./image-processing";
 import { createPreviewInWorker } from "./image-worker-pool";
 import { VideoLab } from "./video-lab";
+import {
+  convertImageColorSpace,
+  encodeHdrFloat32,
+  encodeRgb16,
+  mergeHdrFloat32,
+} from "./advanced-engine";
+import {
+  buildSemanticAiMask,
+  installLocalAiPack,
+  localAiPackState,
+  runNeuralRestore,
+} from "./local-ai";
+import {
+  cacheFilmHistoryImages,
+  filmHistory,
+  installMeasuredOpticsPack,
+  installSpectralFilmPack,
+  loadInstalledOpticsPack,
+  loadSpectralFilmPack,
+  openPackCredits,
+  spectralProfileSettings,
+  type SpectralFilmProfile,
+} from "./open-packs";
 import {
   Dialog,
   DialogContent,
@@ -172,6 +196,29 @@ type DevelopSnapshot = {
   name: string;
   createdAt: number;
   adjustments: Adjustments;
+};
+type EffectBlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "soft-light"
+  | "color"
+  | "luminosity";
+type EffectLayer = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  opacity: number;
+  blendMode: EffectBlendMode;
+  settings: Partial<Adjustments>;
+};
+type ReviewComment = {
+  id: string;
+  author: string;
+  text: string;
+  createdAt: number;
+  resolved: boolean;
 };
 type Adjustments = {
   exposure: number;
@@ -335,6 +382,9 @@ type PhotoRecord = {
   }>;
   peopleCluster: string;
   snapshots: DevelopSnapshot[];
+  effectStack: EffectLayer[];
+  reviewComments: ReviewComment[];
+  reviewLikes: string[];
   importMethod: ImportMethod;
   sourceHandle: StoredFileHandle | null;
 };
@@ -393,7 +443,7 @@ type OpticsProfile = {
   camera: string;
   lens: string;
   settings: Partial<Adjustments>;
-  source: "LibreLux community" | "User import";
+  source: "LibreLux community" | "User import" | "Measured open data";
 };
 
 interface WritableFileHandle {
@@ -758,6 +808,9 @@ const filmLooks = [
       contrast: 17,
       saturation: 8,
       grain: 16,
+      grainSize: 20,
+      grainRoughness: 42,
+      textureAsset: 1,
       fade: 4,
     },
   },
@@ -771,6 +824,9 @@ const filmLooks = [
       saturation: 14,
       highlights: -12,
       grain: 10,
+      grainSize: 14,
+      grainRoughness: 32,
+      textureAsset: 2,
     },
   },
   {
@@ -783,13 +839,23 @@ const filmLooks = [
       contrast: -7,
       saturation: -5,
       grain: 12,
+      grainSize: 18,
+      grainRoughness: 28,
+      textureAsset: 1,
     },
   },
   {
     name: "Press 400",
     era: "1970s",
     tone: "#89877c",
-    settings: { saturation: -100, contrast: 30, grain: 34, grainSize: 38 },
+    settings: {
+      saturation: -100,
+      contrast: 30,
+      grain: 34,
+      grainSize: 38,
+      grainRoughness: 68,
+      textureAsset: 3,
+    },
   },
   {
     name: "Cinema 500",
@@ -802,6 +868,9 @@ const filmLooks = [
       saturation: -12,
       halation: 20,
       grain: 20,
+      grainSize: 26,
+      grainRoughness: 52,
+      textureAsset: 2,
     },
   },
   {
@@ -814,6 +883,9 @@ const filmLooks = [
       blacks: 18,
       fade: 24,
       grain: 18,
+      grainSize: 30,
+      grainRoughness: 38,
+      textureAsset: 1,
     },
   },
   {
@@ -826,6 +898,9 @@ const filmLooks = [
       highlights: -18,
       saturation: 28,
       grain: 7,
+      grainSize: 10,
+      grainRoughness: 24,
+      textureAsset: 2,
     },
   },
   {
@@ -839,6 +914,9 @@ const filmLooks = [
       shadows: 18,
       fade: 13,
       grain: 15,
+      grainSize: 22,
+      grainRoughness: 34,
+      textureAsset: 1,
     },
   },
   {
@@ -851,6 +929,8 @@ const filmLooks = [
       blacks: -18,
       grain: 58,
       grainSize: 56,
+      grainRoughness: 82,
+      textureAsset: 3,
     },
   },
   {
@@ -862,6 +942,9 @@ const filmLooks = [
       contrast: 6,
       saturation: -3,
       grain: 4,
+      grainSize: 8,
+      grainRoughness: 18,
+      textureAsset: 1,
       fade: 0,
     },
   },
@@ -942,6 +1025,57 @@ function openDb(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error);
   });
 }
+const binaryBuffers = new WeakMap<Blob, Promise<ArrayBuffer>>();
+const blobBuffer = (blob: Blob) => {
+  let buffer = binaryBuffers.get(blob);
+  if (!buffer) {
+    buffer = blob.arrayBuffer();
+    binaryBuffers.set(blob, buffer);
+  }
+  return buffer;
+};
+async function serializePhoto(photo: PhotoRecord | RuntimePhoto) {
+  const { url: _url, previewUrl: _previewUrl, ...stored } = photo as RuntimePhoto;
+  void _url;
+  void _previewUrl;
+  const omitOriginal = stored.importMethod === "add" && stored.sourceHandle;
+  return {
+    ...stored,
+    blob: omitOriginal ? new ArrayBuffer(0) : await blobBuffer(stored.blob),
+    previewBlob: stored.previewBlob
+      ? await blobBuffer(stored.previewBlob)
+      : null,
+    displayBlob: stored.displayBlob
+      ? await blobBuffer(stored.displayBlob)
+      : null,
+  };
+}
+function deserializePhoto(record: PhotoRecord) {
+  const stored = record as unknown as PhotoRecord & {
+    blob: Blob | ArrayBuffer;
+    previewBlob: Blob | ArrayBuffer | null;
+    displayBlob: Blob | ArrayBuffer | null;
+  };
+  return {
+    ...stored,
+    blob:
+      stored.blob instanceof Blob
+        ? stored.blob
+        : new Blob([stored.blob], { type: stored.type }),
+    previewBlob:
+      stored.previewBlob instanceof Blob
+        ? stored.previewBlob
+        : stored.previewBlob
+          ? new Blob([stored.previewBlob], { type: "image/jpeg" })
+          : null,
+    displayBlob:
+      stored.displayBlob instanceof Blob
+        ? stored.displayBlob
+        : stored.displayBlob
+          ? new Blob([stored.displayBlob], { type: "image/png" })
+          : null,
+  } as PhotoRecord;
+}
 async function readPhotos(): Promise<PhotoRecord[]> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -949,21 +1083,14 @@ async function readPhotos(): Promise<PhotoRecord[]> {
       .transaction("photos", "readonly")
       .objectStore("photos")
       .getAll();
-    r.onsuccess = () => resolve(r.result as PhotoRecord[]);
+    r.onsuccess = () =>
+      resolve((r.result as PhotoRecord[]).map(deserializePhoto));
     r.onerror = () => reject(r.error);
   });
 }
 async function savePhoto(photo: PhotoRecord | RuntimePhoto) {
   const db = await openDb();
-  const {
-    url: _url,
-    previewUrl: _previewUrl,
-    ...stored
-  } = photo as RuntimePhoto;
-  if (stored.importMethod === "add" && stored.sourceHandle)
-    stored.blob = new Blob([], { type: stored.type });
-  void _url;
-  void _previewUrl;
+  const stored = await serializePhoto(photo);
   return new Promise<void>((resolve, reject) => {
     const r = db
       .transaction("photos", "readwrite")
@@ -1852,6 +1979,12 @@ export default function Home() {
   const [opticsProfiles, setOpticsProfiles] = useState<OpticsProfile[]>(
     communityOpticsProfiles,
   );
+  const [aiPack, setAiPack] = useState({ restore: false, segment: false });
+  const [aiStatus, setAiStatus] = useState("");
+  const [openPackStatus, setOpenPackStatus] = useState("");
+  const [spectralProfiles, setSpectralProfiles] = useState<
+    SpectralFilmProfile[]
+  >([]);
   const catalogImportRef = useRef<HTMLInputElement>(null);
   const [catalogStatus, setCatalogStatus] = useState("");
   const [watchDirectory, setWatchDirectory] =
@@ -1906,6 +2039,25 @@ export default function Home() {
     return ids;
   }, [photos]);
   const selected = photos.find((p) => p.id === selectedId);
+  const previewPhoto = useMemo(() => {
+    if (!selected || !selectedPreset) return selected;
+    const strength = presetAmount / 100;
+    const previewSettings = Object.fromEntries(
+      Object.entries(selectedPreset.settings).map(([key, target]) => {
+        const current = selected.adjustments[key as keyof Adjustments];
+        return [
+          key,
+          typeof target === "number" && typeof current === "number"
+            ? current + (target - current) * strength
+            : target,
+        ];
+      }),
+    ) as Partial<Adjustments>;
+    return {
+      ...selected,
+      adjustments: { ...selected.adjustments, ...previewSettings },
+    };
+  }, [presetAmount, selected, selectedPreset]);
   const folders = useMemo(
     () => [...new Set(photos.map((photo) => photo.folder))].sort(),
     [photos],
@@ -1992,6 +2144,7 @@ export default function Home() {
           savedAt: number;
         }>("edit-journal").catch(() => undefined);
         if (journal?.photo) {
+          journal.photo = deserializePhoto(journal.photo);
           const index = records.findIndex(
             (photo) => photo.id === journal.photo.id,
           );
@@ -2049,6 +2202,9 @@ export default function Home() {
                 aiHistory: p.aiHistory ?? [],
                 peopleCluster: p.peopleCluster ?? "",
                 snapshots: p.snapshots ?? [],
+                effectStack: p.effectStack ?? [],
+                reviewComments: p.reviewComments ?? [],
+                reviewLikes: p.reviewLikes ?? [],
                 masks: (p.masks ?? []).map((mask) => ({
                   ...mask,
                   visible: mask.visible ?? true,
@@ -2211,6 +2367,24 @@ export default function Home() {
   useEffect(() => {
     if ("serviceWorker" in navigator)
       void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    document.documentElement.dataset.libreluxReady = "true";
+    return () => {
+      delete document.documentElement.dataset.libreluxReady;
+    };
+  }, []);
+  useEffect(() => {
+    queueMicrotask(() => {
+      setAiPack(localAiPackState());
+      const measuredProfiles = loadInstalledOpticsPack();
+      if (measuredProfiles.length)
+        setOpticsProfiles((current) => [
+          ...current.filter(
+            (profile) => profile.source !== "Measured open data",
+          ),
+          ...measuredProfiles,
+        ]);
+      void loadSpectralFilmPack().then(setSpectralProfiles);
+    });
   }, []);
   const updateSelected = useCallback(
     (updater: (photo: RuntimePhoto) => RuntimePhoto, persist = true) => {
@@ -2219,10 +2393,13 @@ export default function Home() {
           if (photo.id !== selectedId) return photo;
           const next = { ...updater(photo), editedAt: Date.now() };
           if (persist)
-            void saveSetting("edit-journal", {
-              photo: next,
-              savedAt: Date.now(),
-            })
+            void serializePhoto(next)
+              .then((photo) =>
+                saveSetting("edit-journal", {
+                  photo,
+                  savedAt: Date.now(),
+                }),
+              )
               .then(() => savePhoto(next))
               .then(() => removeSetting("edit-journal"));
           return next;
@@ -2525,6 +2702,9 @@ export default function Home() {
                 ? `Person ${analysis.perceptualHash.slice(0, 4).toUpperCase()}`
                 : "",
             snapshots: [],
+            effectStack: [],
+            reviewComments: [],
+            reviewLikes: [],
             importMethod,
             sourceHandle:
               importMethod === "add"
@@ -2999,29 +3179,42 @@ export default function Home() {
           job.id === jobId ? { ...job, progress: 55 } : job,
         ),
       );
-      const merged = new ImageData(width, height);
-      for (let offset = 0; offset < merged.data.length; offset += 4) {
-        for (let channel = 0; channel < 3; channel++) {
-          const values = framePixels
-            .map((pixels) => pixels.data[offset + channel])
-            .sort((a, b) => a - b);
-          const median = values[Math.floor(values.length / 2)];
-          const average =
-            values.reduce((sum, value) => sum + value, 0) / values.length;
-          merged.data[offset + channel] = Math.round(
-            median * 0.7 + average * 0.3,
-          );
-        }
-        merged.data[offset + 3] = 255;
-      }
+      const merged = mergeHdrFloat32(framePixels);
       const output = document.createElement("canvas");
       output.width = width;
       output.height = height;
-      output.getContext("2d")?.putImageData(merged, 0, 0);
+      output.getContext("2d")?.putImageData(merged.toneMapped, 0, 0);
       const blob = await new Promise<Blob | null>((resolve) =>
         output.toBlob(resolve, "image/png"),
       );
       if (!blob) throw new Error("Merge encoding failed");
+      const hdrMaster = encodeHdrFloat32(
+        width,
+        height,
+        merged.linear,
+        "prophoto-rgb",
+      );
+      const masterName = `HDR-Merge-${Date.now()}-32bit.tif`;
+      if (exportDirectory) {
+        const permission = await exportDirectory.queryPermission?.({
+          mode: "readwrite",
+        });
+        if (permission === "granted") {
+          const file = await exportDirectory.getFileHandle(masterName, {
+            create: true,
+          });
+          const writable = await file.createWritable();
+          await writable.write(hdrMaster);
+          await writable.close();
+        }
+      } else {
+        const masterUrl = URL.createObjectURL(hdrMaster);
+        const masterLink = document.createElement("a");
+        masterLink.href = masterUrl;
+        masterLink.download = masterName;
+        masterLink.click();
+        window.setTimeout(() => URL.revokeObjectURL(masterUrl), 1000);
+      }
       await importFiles([
         new File([blob], `HDR-Merge-${Date.now()}.png`, { type: "image/png" }),
       ]);
@@ -3030,7 +3223,9 @@ export default function Home() {
           job.id === jobId ? { ...job, status: "done", progress: 100 } : job,
         ),
       );
-      setCatalogStatus(`Aligned and deghosted ${targets.length} HDR frames`);
+      setCatalogStatus(
+        `Merged ${targets.length} exposures into a 32-bit float master and tone-mapped preview`,
+      );
     } catch {
       setProgressJobs((current) =>
         current.map((job) =>
@@ -3428,6 +3623,9 @@ export default function Home() {
           importMethod: photo.importMethod ?? "copy",
           sourceHandle: null,
           snapshots: photo.snapshots ?? [],
+          effectStack: photo.effectStack ?? [],
+          reviewComments: photo.reviewComments ?? [],
+          reviewLikes: photo.reviewLikes ?? [],
           url: URL.createObjectURL(displayBlob ?? blob),
           previewBlob: null,
           previewUrl: URL.createObjectURL(displayBlob ?? blob),
@@ -3480,10 +3678,12 @@ export default function Home() {
     id: string,
     name: string,
     settings: Partial<Adjustments>,
-  ) =>
+  ) => {
+    setPresetAmount(100);
     setSelectedPreset((current) =>
       current?.id === id ? null : { id, name, settings },
     );
+  };
   const persistUserPresets = (next: UserPreset[]) => {
     setUserPresets(next);
     void saveSetting("user-presets", next);
@@ -3750,6 +3950,80 @@ export default function Home() {
     ) as Partial<Adjustments>;
     applyPreset(scaled);
     setSelectedPreset(null);
+  };
+  const installAiPack = async (kind: "restore" | "segment" | "all") => {
+    try {
+      setAiStatus("Preparing local AI pack…");
+      await installLocalAiPack(kind, (message, progress) =>
+        setAiStatus(
+          `${message}${typeof progress === "number" ? ` · ${Math.round(progress)}%` : ""}`,
+        ),
+      );
+      setAiPack(localAiPackState());
+      setAiStatus("Local AI pack ready and cached on this device");
+    } catch (error) {
+      setAiStatus(
+        error instanceof Error ? error.message : "Local AI pack install failed",
+      );
+    }
+  };
+  const buildNeuralPreview = async () => {
+    if (!selected) return;
+    try {
+      setAiStatus("Running local neural restore…");
+      const restored = await runNeuralRestore(
+        selected.displayBlob ?? selected.blob,
+        Math.max(1, selected.adjustments.neuralDenoise),
+        Math.max(1, selected.adjustments.superResolution / 100),
+        (message, progress) =>
+          setAiStatus(
+            `${message}${typeof progress === "number" ? ` · ${Math.round(progress)}%` : ""}`,
+          ),
+      );
+      updateSelected((photo) => ({
+        ...photo,
+        displayBlob: restored,
+        url: URL.createObjectURL(restored),
+        aiHistory: [
+          ...photo.aiHistory,
+          {
+            id: crypto.randomUUID(),
+            action: "Local neural denoise and detail recovery",
+            model: "Swin2SR lightweight x2 · local WebGPU/WASM",
+            createdAt: Date.now(),
+          },
+        ],
+      }));
+      setAiPack(localAiPackState());
+      setAiStatus("Neural preview ready; the original remains untouched");
+    } catch (error) {
+      setAiStatus(error instanceof Error ? error.message : "Neural restore failed");
+    }
+  };
+  const installOpenOptics = async () => {
+    try {
+      const measured = await installMeasuredOpticsPack(setOpenPackStatus);
+      setOpticsProfiles((current) => [
+        ...current.filter((profile) => profile.source !== "Measured open data"),
+        ...measured,
+      ]);
+      setOpenPackStatus(`${measured.length} measured lens profiles ready offline`);
+    } catch (error) {
+      setOpenPackStatus(
+        error instanceof Error ? error.message : "Measured optics install failed",
+      );
+    }
+  };
+  const installSpectralProfiles = async () => {
+    try {
+      const installed = await installSpectralFilmPack(setOpenPackStatus);
+      setSpectralProfiles(installed);
+      setOpenPackStatus(`${installed.length} spectral film profiles ready offline`);
+    } catch (error) {
+      setOpenPackStatus(
+        error instanceof Error ? error.message : "Measured film install failed",
+      );
+    }
   };
   const chooseExportDirectory = async () => {
     if (!window.showDirectoryPicker) {
@@ -4075,6 +4349,49 @@ export default function Home() {
     updateSelected((photo) => ({
       ...photo,
       snapshots: photo.snapshots.filter((snapshot) => snapshot.id !== id),
+    }));
+  const addEffectLayer = (
+    name: string,
+    settings: Partial<Adjustments>,
+  ) =>
+    updateSelected((photo) => ({
+      ...photo,
+      effectStack: [
+        ...photo.effectStack,
+        {
+          id: crypto.randomUUID(),
+          name,
+          enabled: true,
+          opacity: 100,
+          blendMode: "normal",
+          settings: structuredClone(settings),
+        },
+      ],
+    }));
+  const updateEffectLayer = (id: string, patch: Partial<EffectLayer>) =>
+    updateSelected((photo) => ({
+      ...photo,
+      effectStack: photo.effectStack.map((layer) =>
+        layer.id === id ? { ...layer, ...patch } : layer,
+      ),
+    }));
+  const moveEffectLayer = (id: string, direction: -1 | 1) =>
+    updateSelected((photo) => {
+      const index = photo.effectStack.findIndex((layer) => layer.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= photo.effectStack.length)
+        return photo;
+      const effectStack = [...photo.effectStack];
+      [effectStack[index], effectStack[target]] = [
+        effectStack[target],
+        effectStack[index],
+      ];
+      return { ...photo, effectStack };
+    });
+  const deleteEffectLayer = (id: string) =>
+    updateSelected((photo) => ({
+      ...photo,
+      effectStack: photo.effectStack.filter((layer) => layer.id !== id),
     }));
   const saveSensorDustMap = async () => {
     if (!selected) return;
@@ -4610,6 +4927,30 @@ export default function Home() {
       sw * factor,
       sh * factor,
     );
+    for (const layer of selected.effectStack.filter(
+      (item) => item.enabled && item.opacity > 0,
+    )) {
+      ctx.save();
+      ctx.globalAlpha = layer.opacity / 100;
+      ctx.globalCompositeOperation =
+        layer.blendMode === "normal" ? "source-over" : layer.blendMode;
+      ctx.filter = cssFilter(
+        { ...selected.adjustments, ...layer.settings },
+        selected.processVersion,
+      );
+      ctx.drawImage(
+        image,
+        sx,
+        sy,
+        sw,
+        sh,
+        (-sw * factor) / 2,
+        (-sh * factor) / 2,
+        sw * factor,
+        sh * factor,
+      );
+      ctx.restore();
+    }
     for (const mask of selected.masks.filter((item) => item.visible)) {
       const layer = document.createElement("canvas");
       layer.width = canvas.width;
@@ -4789,6 +5130,24 @@ export default function Home() {
       }
       ctx.restore();
     }
+    if (selected.adjustments.textureAsset > 0) {
+      const texture = new Image();
+      texture.src = "/textures/analog-dust-scratches.png";
+      await texture.decode();
+      ctx.save();
+      ctx.resetTransform();
+      ctx.globalCompositeOperation =
+        selected.adjustments.textureAsset === 1 ? "soft-light" : "screen";
+      ctx.globalAlpha = Math.min(
+        0.32,
+        0.06 + selected.adjustments.textureAsset * 0.055,
+      );
+      const tile = Math.max(720, Math.min(canvas.width, canvas.height));
+      for (let y = 0; y < canvas.height; y += tile)
+        for (let x = 0; x < canvas.width; x += tile)
+          ctx.drawImage(texture, x, y, tile, tile);
+      ctx.restore();
+    }
     applyTiledDetail(ctx, canvas.width, canvas.height, {
       deconvolution: selected.adjustments.deconvolution,
       apertureCorrection: selected.adjustments.apertureCorrection,
@@ -4803,6 +5162,49 @@ export default function Home() {
       selected.adjustments.lensBlur,
     );
     applyComputationalCorrections(ctx, selected.adjustments);
+    applyFilmGrain(
+      ctx,
+      canvas.width,
+      canvas.height,
+      selected.adjustments.grain,
+      selected.adjustments.grainSize,
+      selected.adjustments.grainRoughness,
+      selected.adjustments.textureAsset,
+    );
+    if (
+      selected.adjustments.neuralDenoise > 0 ||
+      selected.adjustments.superResolution > 100
+    ) {
+      const input = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/png"),
+      );
+      if (input) {
+        const restored = await runNeuralRestore(
+          input,
+          Math.max(
+            selected.adjustments.neuralDenoise,
+            selected.adjustments.superResolution - 100,
+          ),
+          1,
+          (message, progress) =>
+            setAiStatus(
+              `${message}${typeof progress === "number" ? ` · ${Math.round(progress)}%` : ""}`,
+            ),
+        );
+        const restoredImage = new Image();
+        restoredImage.src = URL.createObjectURL(restored);
+        await restoredImage.decode();
+        ctx.save();
+        ctx.resetTransform();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.filter = "none";
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1;
+        ctx.drawImage(restoredImage, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+        URL.revokeObjectURL(restoredImage.src);
+      }
+    }
     if (watermark.trim() || watermarkImage) {
       ctx.save();
       ctx.resetTransform();
@@ -4861,34 +5263,19 @@ export default function Home() {
       ctx.fillText(watermark, anchorX, anchorY);
       ctx.restore();
     }
-    if (proofProfile !== "srgb") {
-      ctx.save();
-      ctx.resetTransform();
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const amount =
-        proofProfile === "display-p3"
-          ? 0.035
-          : proofProfile === "adobe-rgb"
-            ? 0.022
-            : -0.025;
-      for (let i = 0; i < imageData.data.length; i += 4) {
-        const r = imageData.data[i],
-          g = imageData.data[i + 1],
-          b = imageData.data[i + 2];
-        const mid = (r + g + b) / 3;
-        imageData.data[i] = Math.max(0, Math.min(255, r + (r - mid) * amount));
-        imageData.data[i + 1] = Math.max(
-          0,
-          Math.min(255, g + (g - mid) * amount),
-        );
-        imageData.data[i + 2] = Math.max(
-          0,
-          Math.min(255, b + (b - mid) * amount),
-        );
-      }
-      ctx.putImageData(imageData, 0, 0);
-      ctx.restore();
-    }
+    if (
+      proofProfile !== "srgb" &&
+      exportFormat !== "tiff" &&
+      exportFormat !== "dng"
+    )
+      ctx.putImageData(
+        convertImageColorSpace(
+          ctx.getImageData(0, 0, canvas.width, canvas.height),
+          proofProfile,
+        ),
+        0,
+        0,
+      );
     const mime =
       exportFormat === "png"
         ? "image/png"
@@ -4899,22 +5286,19 @@ export default function Home() {
             : "image/jpeg";
     let blob: Blob | null;
     if (exportFormat === "tiff") {
-      const UTIF = await import("utif");
-      const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      blob = new Blob(
-        [UTIF.encodeImage(new Uint8Array(rgba), canvas.width, canvas.height)],
-        {
-          type: "image/tiff",
-        },
+      blob = encodeRgb16(
+        ctx.getImageData(0, 0, canvas.width, canvas.height),
+        "tiff16",
+        proofProfile,
+        selected.metadata.camera,
       );
     } else if (exportFormat === "dng") {
-      if (!/\.dng$/i.test(selected.name)) {
-        setCatalogStatus(
-          "DNG passthrough is available when the original is DNG",
-        );
-        return;
-      }
-      blob = selected.blob;
+      blob = encodeRgb16(
+        ctx.getImageData(0, 0, canvas.width, canvas.height),
+        "dng16",
+        proofProfile,
+        selected.metadata.camera,
+      );
     } else {
       blob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob(resolve, mime, exportQuality / 100),
@@ -5051,6 +5435,20 @@ export default function Home() {
         if (!context) throw new Error("Canvas unavailable");
         context.filter = cssFilter(photo.adjustments, photo.processVersion);
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        for (const layer of photo.effectStack.filter(
+          (item) => item.enabled && item.opacity > 0,
+        )) {
+          context.save();
+          context.globalAlpha = layer.opacity / 100;
+          context.globalCompositeOperation =
+            layer.blendMode === "normal" ? "source-over" : layer.blendMode;
+          context.filter = cssFilter(
+            { ...photo.adjustments, ...layer.settings },
+            photo.processVersion,
+          );
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          context.restore();
+        }
         applyTiledDetail(context, canvas.width, canvas.height, {
           deconvolution: photo.adjustments.deconvolution,
           apertureCorrection: photo.adjustments.apertureCorrection,
@@ -5065,6 +5463,15 @@ export default function Home() {
           photo.adjustments.lensBlur,
         );
         applyComputationalCorrections(context, photo.adjustments);
+        applyFilmGrain(
+          context,
+          canvas.width,
+          canvas.height,
+          photo.adjustments.grain,
+          photo.adjustments.grainSize,
+          photo.adjustments.grainRoughness,
+          photo.adjustments.textureAsset,
+        );
         setProgressJobs((current) =>
           current.map((job) =>
             job.id === photo.id ? { ...job, progress: 70 } : job,
@@ -5080,33 +5487,34 @@ export default function Home() {
                 : "image/jpeg";
         let blob: Blob | null;
         if (exportFormat === "tiff") {
-          const UTIF = await import("utif");
-          const rgba = context.getImageData(
-            0,
-            0,
-            canvas.width,
-            canvas.height,
-          ).data;
-          blob = new Blob(
-            [
-              UTIF.encodeImage(
-                new Uint8Array(rgba),
-                canvas.width,
-                canvas.height,
-              ),
-            ],
-            {
-              type: "image/tiff",
-            },
+          blob = encodeRgb16(
+            context.getImageData(0, 0, canvas.width, canvas.height),
+            "tiff16",
+            proofProfile,
+            photo.metadata.camera,
           );
         } else if (exportFormat === "dng") {
-          if (!/\.dng$/i.test(photo.name))
-            throw new Error("DNG source required");
-          blob = photo.blob;
-        } else {
-          blob = await new Promise<Blob | null>((resolve) =>
-            canvas.toBlob(resolve, mime, exportQuality / 100),
+          blob = encodeRgb16(
+            context.getImageData(0, 0, canvas.width, canvas.height),
+            "dng16",
+            proofProfile,
+            photo.metadata.camera,
           );
+        } else {
+          const workerInput = await new Promise<Blob | null>((resolve) =>
+            canvas.toBlob(resolve, "image/png"),
+          );
+          if (!workerInput) throw new Error("Batch worker input failed");
+          const rendered = await createPreviewInWorker(
+            workerInput,
+            Math.max(canvas.width, canvas.height),
+            {
+              mime,
+              quality: exportQuality / 100,
+              strength: Math.max(0, photo.adjustments.sharpness / 180),
+            },
+          );
+          blob = rendered.blob;
         }
         if (!blob) throw new Error("Export encoding failed");
         const extension = exportFormat === "jpeg" ? "jpg" : exportFormat;
@@ -5168,8 +5576,9 @@ export default function Home() {
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  const photoTransform = selected
-    ? `translate(${selected.adjustments.offsetX / 4}px,${selected.adjustments.offsetY / 4}px) rotate(${selected.adjustments.rotation}deg) scale(${selected.adjustments.flipX * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700) * (1 + selected.adjustments.anamorphic / 200) * (1 + selected.adjustments.volumeDeform / 1000)},${selected.adjustments.flipY * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700) * (1 - selected.adjustments.volumeDeform / 1500)}) perspective(900px) rotateX(${selected.adjustments.perspectiveV / 15}deg) rotateY(${selected.adjustments.perspectiveH / 15}deg)`
+  const transformPhoto = previewPhoto ?? selected;
+  const photoTransform = transformPhoto
+    ? `translate(${transformPhoto.adjustments.offsetX / 4}px,${transformPhoto.adjustments.offsetY / 4}px) rotate(${transformPhoto.adjustments.rotation}deg) scale(${transformPhoto.adjustments.flipX * (transformPhoto.adjustments.perspectiveScale / 100) * (1 + transformPhoto.adjustments.distortion / 700) * (1 + transformPhoto.adjustments.anamorphic / 200) * (1 + transformPhoto.adjustments.volumeDeform / 1000)},${transformPhoto.adjustments.flipY * (transformPhoto.adjustments.perspectiveScale / 100) * (1 + transformPhoto.adjustments.distortion / 700) * (1 - transformPhoto.adjustments.volumeDeform / 1500)}) perspective(900px) rotateX(${transformPhoto.adjustments.perspectiveV / 15}deg) rotateY(${transformPhoto.adjustments.perspectiveH / 15}deg)`
     : "";
   return (
     <main
@@ -5241,27 +5650,34 @@ export default function Home() {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark">
-            <Aperture size={19} />
+            <img src="/librelux-logo.svg" alt="" aria-hidden="true" />
           </div>
           <strong>LibreLux</strong>
           <span>by Good Tools</span>
         </div>
-        <Tabs
-          value={workspace}
-          onValueChange={(v) => setWorkspace(v as Workspace)}
-        >
-          <TabsList className="workspace-tabs" variant="line">
-            <TabsTrigger value="library">
+        <nav className="workspace-tabs" role="tablist" aria-label="Workspaces">
+            <button
+              role="tab"
+              aria-selected={workspace === "library"}
+              onClick={() => setWorkspace("library")}
+            >
               <Library /> Library <kbd>G</kbd>
-            </TabsTrigger>
-            <TabsTrigger value="develop">
+            </button>
+            <button
+              role="tab"
+              aria-selected={workspace === "develop"}
+              onClick={() => setWorkspace("develop")}
+            >
               <SlidersHorizontal /> Develop <kbd>D</kbd>
-            </TabsTrigger>
-            <TabsTrigger value="enhance">
+            </button>
+            <button
+              role="tab"
+              aria-selected={workspace === "enhance"}
+              onClick={() => setWorkspace("enhance")}
+            >
               <Sparkles /> Optics <kbd>E</kbd>
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+            </button>
+        </nav>
         <div className="top-actions">
           <ToolButton label="Undo" onClick={undo}>
             <Undo2 />
@@ -5830,7 +6246,7 @@ export default function Home() {
           ) : selected ? (
             <EditorCanvas
               key={selected.id}
-              photo={selected}
+              photo={previewPhoto ?? selected}
               referencePhoto={referencePhoto}
               workspace={workspace}
               zoom={zoom}
@@ -6068,6 +6484,12 @@ export default function Home() {
                     exportOpticsProfiles={exportOpticsProfiles}
                     saveSensorDustMap={saveSensorDustMap}
                     applySensorDustMap={applySensorDustMap}
+                    aiPack={aiPack}
+                    aiStatus={aiStatus}
+                    installAiPack={installAiPack}
+                    buildNeuralPreview={buildNeuralPreview}
+                    installOpenOptics={installOpenOptics}
+                    openPackStatus={openPackStatus}
                   />
                 ) : opticsMode === "creative" ? (
                   <CreativePanels
@@ -6076,6 +6498,10 @@ export default function Home() {
                     applyPreset={applyPreset}
                     selectedPreset={selectedPreset}
                     choosePreset={choosePreset}
+                    addEffectLayer={addEffectLayer}
+                    updateEffectLayer={updateEffectLayer}
+                    moveEffectLayer={moveEffectLayer}
+                    deleteEffectLayer={deleteEffectLayer}
                   />
                 ) : (
                   <FilmPanels
@@ -6086,6 +6512,22 @@ export default function Home() {
                     choosePreset={choosePreset}
                     createFilmProfile={() => createUserPreset("Film profiles")}
                     exportFilmProfiles={exportUserPresets}
+                    spectralProfiles={spectralProfiles}
+                    installSpectralProfiles={installSpectralProfiles}
+                    cacheHistory={async () => {
+                      try {
+                        setOpenPackStatus("Caching licensed film history images…");
+                        await cacheFilmHistoryImages();
+                        setOpenPackStatus("Film history is available offline");
+                      } catch (error) {
+                        setOpenPackStatus(
+                          error instanceof Error
+                            ? error.message
+                            : "Film history cache failed",
+                        );
+                      }
+                    }}
+                    openPackStatus={openPackStatus}
                   />
                 )}
               </div>
@@ -6914,10 +7356,7 @@ function ExportDialog({
               (value) => (
                 <button
                   key={value}
-                  disabled={
-                    (value === "avif" && !avifSupported) ||
-                    (value === "dng" && !/\.dng$/i.test(photo?.name ?? ""))
-                  }
+                  disabled={value === "avif" && !avifSupported}
                   className={format === value ? "active" : ""}
                   onClick={() => setFormat(value)}
                 >
@@ -7743,6 +8182,46 @@ function EditorCanvas({
     const sampleCtx = sample.getContext("2d", { willReadFrequently: true });
     if (!sampleCtx) return;
     sampleCtx.drawImage(image, 0, 0, width, height);
+    if (
+      ["hair", "skin", "clothes", "person", "subject", "object"].includes(
+        maskTarget,
+      )
+    ) {
+      try {
+        const semantic = await buildSemanticAiMask(
+          sample,
+          maskTarget,
+          { x: normalizedX, y: normalizedY },
+        );
+        const names: Record<string, string> = {
+          hair: "AI hair",
+          skin: "AI skin",
+          clothes: "AI clothes",
+          person: "AI person",
+          subject: "AI subject",
+          object: "AI object",
+        };
+        onMaskCreated({
+          id: crypto.randomUUID(),
+          name: `${names[maskTarget]} · ${semantic.labels.join(", ")}`,
+          target: maskTarget,
+          dataUrl: semantic.dataUrl,
+          tolerance: maskTolerance,
+          feather: maskFeather,
+          visible: true,
+          inverted: false,
+          overlayColor: "#b6f36b",
+          overlayOpacity: 48,
+          pinX: normalizedX,
+          pinY: normalizedY,
+          adjustments: { ...defaultLocal },
+        });
+        return;
+      } catch {
+        // If the optional local model cannot run, keep the fast geometric and
+        // color-aware selector available instead of losing the user's click.
+      }
+    }
     const pixels = sampleCtx.getImageData(0, 0, width, height);
     const output = sampleCtx.createImageData(width, height);
     const startX = Math.min(width - 1, Math.round(normalizedX * (width - 1)));
@@ -8177,12 +8656,46 @@ function EditorCanvas({
             }}
           />
         )}
+        {!showBefore &&
+          photo.effectStack
+            .filter((layer) => layer.enabled && layer.opacity > 0)
+            .map((layer) => (
+              <img
+                key={layer.id}
+                className="effect-layer-preview"
+                src={renderSource}
+                alt=""
+                aria-hidden="true"
+                style={{
+                  filter: cssFilter(
+                    { ...photo.adjustments, ...layer.settings },
+                    photo.processVersion,
+                  ),
+                  transform: photoTransform,
+                  opacity: layer.opacity / 100,
+                  mixBlendMode: layer.blendMode,
+                  clipPath: `inset(${a.cropTop}% ${a.cropRight}% ${a.cropBottom}% ${a.cropLeft}%)`,
+                }}
+              />
+            ))}
         {!showBefore && a.dustRemoval > 0 && (
           <img
             className="dust-visualization"
             src={renderSource}
             alt="Sensor dust visualization"
             style={{ opacity: Math.min(0.48, a.dustRemoval / 210) }}
+          />
+        )}
+        {!showBefore && a.textureAsset > 0 && (
+          <img
+            className="analog-texture-overlay"
+            src="/textures/analog-dust-scratches.png"
+            alt=""
+            aria-hidden="true"
+            style={{
+              opacity: Math.min(0.32, 0.06 + a.textureAsset * 0.055),
+              mixBlendMode: a.textureAsset === 1 ? "soft-light" : "screen",
+            }}
           />
         )}
         {!showBefore && softProof && gamutWarnings && (
@@ -8583,6 +9096,13 @@ function LibraryInspector({
   const sidecarRef = useRef<HTMLInputElement>(null);
   const relinkRef = useRef<HTMLInputElement>(null);
   const [keywordDraft, setKeywordDraft] = useState("");
+  const [reviewAuthor, setReviewAuthor] = useState(
+    () =>
+      typeof window === "undefined"
+        ? "Local reviewer"
+        : localStorage.getItem("librelux-review-author") ?? "Local reviewer",
+  );
+  const [commentDraft, setCommentDraft] = useState("");
   const keywordSuggestions = [
     "People > Portrait",
     "Places > Travel",
@@ -8725,6 +9245,108 @@ function LibraryInspector({
                 {photo.label === label && <Check />}
               </button>
             ))}
+        </div>
+      </Panel>
+      <Panel
+        title="Review"
+        badge={`${photo.reviewComments.filter((comment) => !comment.resolved).length}`}
+        open={false}
+      >
+        <label className="meta-field">
+          <span>Review identity</span>
+          <input
+            value={reviewAuthor}
+            onChange={(event) => {
+              setReviewAuthor(event.target.value);
+              localStorage.setItem("librelux-review-author", event.target.value);
+            }}
+            placeholder="Your name"
+          />
+        </label>
+        <button
+          className={
+            photo.reviewLikes.includes(reviewAuthor) ? "review-like active" : "review-like"
+          }
+          aria-pressed={photo.reviewLikes.includes(reviewAuthor)}
+          onClick={() =>
+            update((current) => ({
+              ...current,
+              reviewLikes: current.reviewLikes.includes(reviewAuthor)
+                ? current.reviewLikes.filter((name) => name !== reviewAuthor)
+                : [...current.reviewLikes, reviewAuthor],
+            }))
+          }
+        >
+          <Heart /> {photo.reviewLikes.length} likes
+        </button>
+        <div className="review-composer">
+          <textarea
+            value={commentDraft}
+            onChange={(event) => setCommentDraft(event.target.value)}
+            placeholder="Leave a review note"
+          />
+          <button
+            disabled={!commentDraft.trim() || !reviewAuthor.trim()}
+            onClick={() => {
+              const text = commentDraft.trim();
+              if (!text || !reviewAuthor.trim()) return;
+              update((current) => ({
+                ...current,
+                reviewComments: [
+                  ...current.reviewComments,
+                  {
+                    id: crypto.randomUUID(),
+                    author: reviewAuthor.trim(),
+                    text,
+                    createdAt: Date.now(),
+                    resolved: false,
+                  },
+                ],
+              }));
+              setCommentDraft("");
+            }}
+          >
+            Add comment
+          </button>
+        </div>
+        <div className="review-comments">
+          {photo.reviewComments.map((comment) => (
+            <article key={comment.id} className={comment.resolved ? "resolved" : ""}>
+              <header>
+                <strong>{comment.author}</strong>
+                <time>{new Date(comment.createdAt).toLocaleString()}</time>
+              </header>
+              <p>{comment.text}</p>
+              <div>
+                <button
+                  onClick={() =>
+                    update((current) => ({
+                      ...current,
+                      reviewComments: current.reviewComments.map((item) =>
+                        item.id === comment.id
+                          ? { ...item, resolved: !item.resolved }
+                          : item,
+                      ),
+                    }))
+                  }
+                >
+                  {comment.resolved ? "Reopen" : "Resolve"}
+                </button>
+                <button
+                  onClick={() =>
+                    update((current) => ({
+                      ...current,
+                      reviewComments: current.reviewComments.filter(
+                        (item) => item.id !== comment.id,
+                      ),
+                    }))
+                  }
+                >
+                  Delete
+                </button>
+              </div>
+            </article>
+          ))}
         </div>
       </Panel>
       <Panel title="Description">
@@ -9418,7 +10040,7 @@ function DevelopPanels({
             <path d="M0 90L200 0" />
             <path
               className="active"
-              d={`M0 ${88 - a.curves.rgb.shadows / 4} C52 ${62 - a.curves.rgb.midtones / 5} 91 ${49 - a.curves.rgb.midtones / 4} S150 ${24 - a.curves.rgb.highlights / 5} 200 ${4 - a.curves.rgb.highlights / 5}`}
+              d={`M0 ${88 - a.curves.rgb.shadows / 4} C18 ${82 - a.curves.rgb.shadows / 6} 52 ${62 - a.curves.rgb.midtones / 5} 91 ${49 - a.curves.rgb.midtones / 4} S150 ${24 - a.curves.rgb.highlights / 5} 200 ${4 - a.curves.rgb.highlights / 5}`}
             />
             <circle
               className="curve-point"
@@ -10577,6 +11199,12 @@ function PurePanels({
   exportOpticsProfiles,
   saveSensorDustMap,
   applySensorDustMap,
+  aiPack,
+  aiStatus,
+  installAiPack,
+  buildNeuralPreview,
+  installOpenOptics,
+  openPackStatus,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -10592,8 +11220,26 @@ function PurePanels({
   exportOpticsProfiles: () => void;
   saveSensorDustMap: () => Promise<void>;
   applySensorDustMap: () => Promise<void>;
+  aiPack: { restore: boolean; segment: boolean };
+  aiStatus: string;
+  installAiPack: (kind: "restore" | "segment" | "all") => Promise<void>;
+  buildNeuralPreview: () => Promise<void>;
+  installOpenOptics: () => Promise<void>;
+  openPackStatus: string;
 }) {
   const a = photo.adjustments;
+  const profileQuery = `${photo.metadata.camera} ${photo.metadata.lens}`
+    .trim()
+    .toLowerCase();
+  const visibleOpticsProfiles = opticsProfiles
+    .filter((profile) =>
+      profileQuery
+        ? `${profile.camera} ${profile.lens}`.toLowerCase().includes(profileQuery) ||
+          profileQuery.includes(profile.camera.toLowerCase()) ||
+          profileQuery.includes(profile.lens.toLowerCase())
+        : true,
+    )
+    .slice(0, 48);
   return (
     <>
       <div className="enhance-hero pure-hero">
@@ -10691,6 +11337,17 @@ function PurePanels({
           <span className="local-dot" /> Preview and export processing run
           locally.
         </p>
+        <div className="pack-actions">
+          <button onClick={() => void installAiPack("all")}>
+            {aiPack.restore && aiPack.segment
+              ? "Reinstall local AI packs"
+              : "Install local AI packs"}
+          </button>
+          <button className="apply" onClick={() => void buildNeuralPreview()}>
+            Build neural preview
+          </button>
+        </div>
+        {aiStatus && <p className="pack-status" role="status">{aiStatus}</p>}
       </Panel>
       <Panel title="Sensor dust map" open={false}>
         <p className="panel-note">
@@ -10708,18 +11365,29 @@ function PurePanels({
       </Panel>
       <Panel title="Optics profile" badge="Auto">
         <div className="preset-manager-actions">
+          <button onClick={() => void installOpenOptics()}>
+            Install measured profiles
+          </button>
           <button onClick={importOpticsProfiles}>Import profiles</button>
           <button onClick={exportOpticsProfiles}>Export profiles</button>
         </div>
+        <p className="panel-note">{openPackCredits.optics}</p>
+        {openPackStatus && <p className="pack-status" role="status">{openPackStatus}</p>}
         <div className="optics-profile-list">
-          {opticsProfiles.map((profile) => (
+          {visibleOpticsProfiles.map((profile) => (
             <button
               key={profile.id}
+              className={
+                selectedPreset?.id === `optics-profile-${profile.id}`
+                  ? "preset-selected"
+                  : ""
+              }
               onClick={() =>
-                Object.entries(profile.settings).forEach(([key, value]) => {
-                  if (typeof value === "number")
-                    setAdjustment(key as keyof Adjustments, value);
-                })
+                choosePreset(
+                  `optics-profile-${profile.id}`,
+                  `${profile.lens} correction`,
+                  profile.settings,
+                )
               }
             >
               <strong>{profile.lens}</strong>
@@ -10767,25 +11435,59 @@ function PurePanels({
         />
         <div className="profile-strip">
           <button
-            onClick={() => {
-              setAdjustment("distortion", -18);
-              setAdjustment("lensVignette", 14);
-            }}
+            className={
+              selectedPreset?.id === "optics-barrel" ? "preset-selected" : ""
+            }
+            onClick={() =>
+              choosePreset("optics-barrel", "Barrel correction", {
+                distortion: -18,
+                lensVignette: 14,
+              })
+            }
           >
             Barrel
           </button>
-          <button onClick={() => setAdjustment("distortion", 18)}>
+          <button
+            className={
+              selectedPreset?.id === "optics-pincushion"
+                ? "preset-selected"
+                : ""
+            }
+            onClick={() =>
+              choosePreset("optics-pincushion", "Pincushion correction", {
+                distortion: 18,
+              })
+            }
+          >
             Pincushion
           </button>
           <button
-            onClick={() => {
-              setAdjustment("distortion", -10);
-              setAdjustment("perspectiveAspect", 8);
-            }}
+            className={
+              selectedPreset?.id === "optics-moustache"
+                ? "preset-selected"
+                : ""
+            }
+            onClick={() =>
+              choosePreset("optics-moustache", "Moustache correction", {
+                distortion: -10,
+                perspectiveAspect: 8,
+              })
+            }
           >
             Moustache
           </button>
-          <button onClick={() => setAdjustment("distortion", -45)}>
+          <button
+            className={
+              selectedPreset?.id === "optics-fisheye"
+                ? "preset-selected"
+                : ""
+            }
+            onClick={() =>
+              choosePreset("optics-fisheye", "Fisheye correction", {
+                distortion: -45,
+              })
+            }
+          >
             Fisheye
           </button>
         </div>
@@ -11008,6 +11710,10 @@ function CreativePanels({
   applyPreset,
   selectedPreset,
   choosePreset,
+  addEffectLayer,
+  updateEffectLayer,
+  moveEffectLayer,
+  deleteEffectLayer,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -11018,6 +11724,10 @@ function CreativePanels({
     name: string,
     settings: Partial<Adjustments>,
   ) => void;
+  addEffectLayer: (name: string, settings: Partial<Adjustments>) => void;
+  updateEffectLayer: (id: string, patch: Partial<EffectLayer>) => void;
+  moveEffectLayer: (id: string, direction: -1 | 1) => void;
+  deleteEffectLayer: (id: string) => void;
 }) {
   const a = photo.adjustments;
   return (
@@ -11065,6 +11775,93 @@ function CreativePanels({
               </span>
             </button>
           ))}
+        </div>
+        {selectedPreset && (
+          <button
+            className="mask-batch"
+            onClick={() =>
+              addEffectLayer(selectedPreset.name, selectedPreset.settings)
+            }
+          >
+            Add previewed look to effect stack
+          </button>
+        )}
+      </Panel>
+      <Panel title="Effect stack" badge={`${photo.effectStack.length}`}>
+        <div className="effect-stack">
+          {photo.effectStack.map((layer, index) => (
+            <div key={layer.id} className={!layer.enabled ? "disabled" : ""}>
+              <button
+                aria-label={`${layer.enabled ? "Disable" : "Enable"} ${layer.name}`}
+                onClick={() =>
+                  updateEffectLayer(layer.id, { enabled: !layer.enabled })
+                }
+              >
+                {layer.enabled ? <Check /> : <X />}
+              </button>
+              <strong>{layer.name}</strong>
+              <select
+                aria-label={`${layer.name} blend mode`}
+                value={layer.blendMode}
+                onChange={(event) =>
+                  updateEffectLayer(layer.id, {
+                    blendMode: event.target.value as EffectBlendMode,
+                  })
+                }
+              >
+                {(
+                  [
+                    "normal",
+                    "multiply",
+                    "screen",
+                    "overlay",
+                    "soft-light",
+                    "color",
+                    "luminosity",
+                  ] as EffectBlendMode[]
+                ).map((mode) => (
+                  <option key={mode}>{mode}</option>
+                ))}
+              </select>
+              <input
+                aria-label={`${layer.name} opacity`}
+                type="range"
+                min="0"
+                max="100"
+                value={layer.opacity}
+                onChange={(event) =>
+                  updateEffectLayer(layer.id, {
+                    opacity: Number(event.target.value),
+                  })
+                }
+              />
+              <button
+                aria-label={`Move ${layer.name} up`}
+                disabled={index === 0}
+                onClick={() => moveEffectLayer(layer.id, -1)}
+              >
+                ↑
+              </button>
+              <button
+                aria-label={`Move ${layer.name} down`}
+                disabled={index === photo.effectStack.length - 1}
+                onClick={() => moveEffectLayer(layer.id, 1)}
+              >
+                ↓
+              </button>
+              <button
+                aria-label={`Delete ${layer.name}`}
+                onClick={() => deleteEffectLayer(layer.id)}
+              >
+                <Trash2 />
+              </button>
+            </div>
+          ))}
+          {!photo.effectStack.length && (
+            <p className="panel-note">
+              Preview a recipe, then add it here to blend and reorder it.
+            </p>
+          )}
         </div>
       </Panel>
       <Panel title="Color & tone">
@@ -11155,6 +11952,10 @@ function FilmPanels({
   choosePreset,
   createFilmProfile,
   exportFilmProfiles,
+  spectralProfiles,
+  installSpectralProfiles,
+  cacheHistory,
+  openPackStatus,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -11167,6 +11968,10 @@ function FilmPanels({
   ) => void;
   createFilmProfile: () => void;
   exportFilmProfiles: () => void;
+  spectralProfiles: SpectralFilmProfile[];
+  installSpectralProfiles: () => Promise<void>;
+  cacheHistory: () => Promise<void>;
+  openPackStatus: string;
 }) {
   const a = photo.adjustments;
   const eras = [
@@ -11204,7 +12009,16 @@ function FilmPanels({
           Original analog-inspired renderings with editable grain, aging, and
           darkroom effects.
         </p>
-        <button onClick={() => applyPreset(filmLooks[0].settings)}>
+        <button
+          className={selectedPreset?.id === "film-featured" ? "preset-selected" : ""}
+          onClick={() =>
+            choosePreset(
+              "film-featured",
+              filmLooks[0].name,
+              cameraFilmTransform(filmLooks[0].settings),
+            )
+          }
+        >
           <WandSparkles /> Apply featured look
         </button>
       </div>
@@ -11248,6 +12062,35 @@ function FilmPanels({
             </button>
           ))}
         </div>
+      </Panel>
+      <Panel title="Measured film" badge={`${spectralProfiles.length}`} open={false}>
+        <div className="preset-manager-actions">
+          <button onClick={() => void installSpectralProfiles()}>
+            Install spectral profiles
+          </button>
+        </div>
+        <p className="panel-note">{openPackCredits.spectral}</p>
+        <div className="spectral-profile-list">
+          {spectralProfiles.map((profile) => {
+            const id = `spectral-${profile.info.stock}`;
+            return (
+              <button
+                key={id}
+                className={selectedPreset?.id === id ? "preset-selected" : ""}
+                onClick={() =>
+                  choosePreset(id, profile.info.name, {
+                    ...cameraFilmTransform(spectralProfileSettings(profile)),
+                    textureAsset: 3,
+                  })
+                }
+              >
+                <strong>{profile.info.name}</strong>
+                <span>{profile.info.type} · measured response</span>
+              </button>
+            );
+          })}
+        </div>
+        {openPackStatus && <p className="pack-status" role="status">{openPackStatus}</p>}
       </Panel>
       <Panel title="Rendering">
         <AdjustSlider
@@ -11409,9 +12252,29 @@ function FilmPanels({
           </button>
         </div>
         <p className="panel-note">
-          Procedural textures scale to the finished output without uploading
-          assets.
+          High-resolution scanned-style dust and scratch texture scales to the
+          finished output and stays on this device.
         </p>
+      </Panel>
+      <Panel title="Film history" open={false}>
+        <div className="film-history">
+          {filmHistory.map((item) => (
+            <article key={item.era}>
+              <img src={item.image} alt="" loading="lazy" />
+              <div>
+                <small>{item.era}</small>
+                <strong>{item.title}</strong>
+                <p>{item.text}</p>
+                <a href={item.source} target="_blank" rel="noreferrer">
+                  {item.credit}
+                </a>
+              </div>
+            </article>
+          ))}
+        </div>
+        <button className="mask-batch" onClick={() => void cacheHistory()}>
+          Make history images available offline
+        </button>
       </Panel>
       <Panel title="Film profiles" open={false}>
         <div className="preset-manager-actions">

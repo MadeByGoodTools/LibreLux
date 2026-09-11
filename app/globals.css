@@ -154,12 +154,13 @@ button {
 .brand-mark {
   width: 31px;
   height: 31px;
-  border-radius: 9px;
   display: grid;
   place-items: center;
-  color: #17200f;
-  background: linear-gradient(145deg, #d3ff9b, #8fd541);
-  box-shadow: inset 0 0 0 1px #e2ffc0;
+}
+.brand-mark img {
+  width: 33px;
+  height: 33px;
+  filter: drop-shadow(0 4px 10px rgba(57, 220, 162, 0.15));
 }
 .brand strong {
   font-size: 16px;
@@ -173,6 +174,8 @@ button {
 }
 .workspace-tabs {
   margin: auto;
+  display: flex;
+  align-items: center;
   background: transparent !important;
   height: 56px;
   gap: 12px;
@@ -184,7 +187,7 @@ button {
   color: #8e9890 !important;
   font-size: 13px !important;
 }
-.workspace-tabs button[data-state="active"] {
+.workspace-tabs button[aria-selected="true"] {
   color: #f5f8f4 !important;
 }
 .workspace-tabs button:after {
@@ -1815,6 +1818,16 @@ button {
   pointer-events: none;
   z-index: 2;
 }
+.effect-layer-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: auto;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 2;
+}
 .dust-visualization {
   position: absolute;
   inset: 0;
@@ -2205,7 +2218,11 @@ button {
 }
 .preset-grid button.preset-selected,
 .recipe-buttons button.preset-selected,
-.look-grid button.preset-selected {
+.look-grid button.preset-selected,
+.profile-strip button.preset-selected,
+.optics-profile-list button.preset-selected,
+.spectral-profile-list button.preset-selected,
+button.preset-selected {
   border-color: #b6f36b;
   box-shadow:
     0 0 0 2px #b6f36b55,
@@ -2886,6 +2903,8 @@ button {
   background: #181c19;
   border-color: #39413b;
   color: #eef1ed;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 .tether-dialog video {
   width: 100%;
@@ -3259,6 +3278,138 @@ button {
 }
 .video-drop {
   min-height: 180px;
+}
+.analog-texture-overlay,
+.effect-layer-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.analog-texture-overlay {
+  z-index: 8;
+  object-fit: fill;
+}
+.pack-actions,
+.preset-manager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pack-status {
+  margin: 7px 0 0;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, #303832);
+  border-radius: 6px;
+  color: #c8dec9;
+  background: color-mix(in srgb, var(--accent) 7%, #151915);
+  font-size: 11px;
+}
+.spectral-profile-list,
+.review-comments,
+.film-history {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+.spectral-profile-list button {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  padding: 8px;
+  border: 1px solid #343b35;
+  border-radius: 6px;
+  background: #181c19;
+}
+.spectral-profile-list span {
+  color: #899289;
+  font-size: 10px;
+}
+.film-history article {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid #303631;
+  border-radius: 7px;
+  background: #151815;
+}
+.film-history img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+.film-history article div {
+  display: grid;
+  gap: 3px;
+}
+.film-history small,
+.film-history a {
+  color: #91ab93;
+  font-size: 9px;
+}
+.film-history p {
+  margin: 0;
+  color: #aab1ab;
+  font-size: 10px;
+  line-height: 1.35;
+}
+.review-like {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.review-like.active {
+  color: #d9ffa8;
+  border-color: var(--accent);
+}
+.review-like svg {
+  width: 14px;
+}
+.review-composer {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+.review-composer textarea {
+  min-height: 64px;
+}
+.review-comments article {
+  padding: 8px;
+  border: 1px solid #343a34;
+  border-radius: 6px;
+  background: #151815;
+}
+.review-comments article.resolved {
+  opacity: 0.58;
+}
+.review-comments header,
+.review-comments article > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+}
+.review-comments time {
+  color: #7f887f;
+  font-size: 9px;
+}
+.review-comments p {
+  margin: 7px 0;
+  font-size: 11px;
+}
+:where(button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid #b8ef77;
+  outline-offset: 2px;
+}
+.section-title,
+.source-list span,
+.empty-library > span,
+.statusbar,
+.no-selection {
+  color: #929c94;
 }
 @media (max-width: 650px) {
   .preset-commit.floating {
