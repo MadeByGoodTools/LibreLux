@@ -276,10 +276,10 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Retouching and generative assistance
 
-- [ ] Planned — Heal, clone, and content-aware remove modes
-- [ ] Planned — Brush visualization and source-point control
+- [x] Done — Heal, clone, and local source-aware remove modes
+- [x] Done — Brush visualization and source-point control
 - [ ] Planned — Dust-spot visualization and automatic sensor-dust removal
-- [ ] Planned — Red-eye and pet-eye correction
+- [x] Done — Red-eye and pet-eye correction
 - [ ] Planned — Portrait quick actions for skin, teeth, eyes, hair, and clothing
 - [ ] Planned — Blemish and unwanted-person removal
 - [ ] Planned — Reflection and window-glare reduction
