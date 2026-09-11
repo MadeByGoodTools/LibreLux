@@ -53,6 +53,7 @@ import { Slider } from "@/components/ui/slider";
 import * as exifr from "exifr";
 import {
   decodeEditableSource,
+  decodeRawLinear,
   isRawFile,
   isTiffFile,
   type RawDecodeInfo,
@@ -68,9 +69,17 @@ import { VideoLab } from "./video-lab";
 import {
   convertImageColorSpace,
   encodeHdrFloat32,
+  encodeLinearRgb16,
   encodeRgb16,
   mergeHdrFloat32,
 } from "./advanced-engine";
+import {
+  applyLinearDevelop,
+  applyLinearEffectLayers,
+  applyLinearMask,
+  finishLinearRaw,
+  resampleLinearRaw,
+} from "./linear-raw-engine";
 import {
   buildSemanticAiMask,
   installLocalAiPack,
@@ -1284,6 +1293,76 @@ function localFilter(a: LocalAdjustments) {
   const blur = Math.max(0, a.noise / 180 - a.sharpness / 650 - a.texture / 900);
   return `brightness(${Math.max(0.15, Math.pow(2, light))}) contrast(${Math.max(0.2, 1 + contrast)}) saturate(${Math.max(0, 1 + saturation)}) sepia(${Math.abs(a.temperature) / 650}) hue-rotate(${a.hue + (a.temperature < 0 ? -a.temperature / 18 : 0) + a.tint / 30}deg) blur(${blur}px)`;
 }
+
+async function maskAlphaAtSize(dataUrl: string, width: number, height: number) {
+  const image = new Image();
+  image.src = dataUrl;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Mask processing is unavailable");
+  context.drawImage(image, 0, 0, width, height);
+  const pixels = context.getImageData(0, 0, width, height).data;
+  const alpha = new Float32Array(width * height);
+  for (let pixel = 0; pixel < alpha.length; pixel++)
+    alpha[pixel] = pixels[pixel * 4 + 3] / 255;
+  return alpha;
+}
+
+async function buildLinearRawExport(
+  photo: RuntimePhoto,
+  geometry: {
+    sourceX: number;
+    sourceY: number;
+    sourceWidth: number;
+    sourceHeight: number;
+    width: number;
+    height: number;
+  },
+  outputSharpen: "none" | "screen" | "matte" | "glossy",
+) {
+  const original =
+    photo.sourceHandle && photo.importMethod === "add"
+      ? await photo.sourceHandle.getFile()
+      : new File([photo.blob], photo.name, { type: photo.type });
+  const decoded = await decodeRawLinear(original);
+  const ungraded = resampleLinearRaw(decoded, {
+    ...geometry,
+    rotation: photo.adjustments.rotation,
+    flipX: photo.adjustments.flipX,
+    flipY: photo.adjustments.flipY,
+    perspectiveH: photo.adjustments.perspectiveH,
+    perspectiveV: photo.adjustments.perspectiveV,
+    perspectiveScale: photo.adjustments.perspectiveScale,
+    distortion: photo.adjustments.distortion,
+    anamorphic: photo.adjustments.anamorphic,
+    offsetX: photo.adjustments.offsetX,
+    offsetY: photo.adjustments.offsetY,
+  });
+  let rendered = applyLinearDevelop(ungraded, photo.adjustments);
+  rendered = applyLinearEffectLayers(
+    ungraded,
+    rendered,
+    photo.adjustments,
+    photo.effectStack,
+  );
+  for (const mask of photo.masks.filter((item) => item.visible)) {
+    rendered = applyLinearMask(
+      ungraded,
+      rendered,
+      photo.adjustments,
+      mask.adjustments,
+      await maskAlphaAtSize(mask.dataUrl, rendered.width, rendered.height),
+      mask.inverted,
+    );
+  }
+  const sharpen =
+    outputSharpen === "none" ? 0 : outputSharpen === "screen" ? 18 : 28;
+  return finishLinearRaw(rendered, photo.adjustments, sharpen);
+}
+
 function applyComputationalCorrections(
   context: CanvasRenderingContext2D,
   adjustments: Adjustments,
@@ -5285,17 +5364,47 @@ export default function Home() {
             ? "image/avif"
             : "image/jpeg";
     let blob: Blob | null;
-    if (exportFormat === "tiff") {
+    const highBitRawExport =
+      (exportFormat === "tiff" || exportFormat === "dng") &&
+      isRawFile({ name: selected.name }) &&
+      selected.retouchSpots.length === 0 &&
+      !watermark.trim() &&
+      !watermarkImage;
+    if (highBitRawExport) {
+      try {
+        const linear = await buildLinearRawExport(
+          selected,
+          {
+            sourceX: sx,
+            sourceY: sy,
+            sourceWidth: sw,
+            sourceHeight: sh,
+            width: canvas.width,
+            height: canvas.height,
+          },
+          outputSharpen,
+        );
+        blob = encodeLinearRgb16(
+          linear,
+          exportFormat === "tiff" ? "tiff16" : "dng16",
+          proofProfile,
+          selected.metadata.camera,
+        );
+      } catch (error) {
+        setCatalogStatus(
+          `Linear RAW export fell back to the display renderer: ${error instanceof Error ? error.message : "source unavailable"}`,
+        );
+        blob = encodeRgb16(
+          ctx.getImageData(0, 0, canvas.width, canvas.height),
+          exportFormat === "tiff" ? "tiff16" : "dng16",
+          proofProfile,
+          selected.metadata.camera,
+        );
+      }
+    } else if (exportFormat === "tiff" || exportFormat === "dng") {
       blob = encodeRgb16(
         ctx.getImageData(0, 0, canvas.width, canvas.height),
-        "tiff16",
-        proofProfile,
-        selected.metadata.camera,
-      );
-    } else if (exportFormat === "dng") {
-      blob = encodeRgb16(
-        ctx.getImageData(0, 0, canvas.width, canvas.height),
-        "dng16",
+        exportFormat === "tiff" ? "tiff16" : "dng16",
         proofProfile,
         selected.metadata.camera,
       );
@@ -5486,17 +5595,33 @@ export default function Home() {
                 ? "image/avif"
                 : "image/jpeg";
         let blob: Blob | null;
-        if (exportFormat === "tiff") {
-          blob = encodeRgb16(
-            context.getImageData(0, 0, canvas.width, canvas.height),
-            "tiff16",
+        const highBitRawExport =
+          (exportFormat === "tiff" || exportFormat === "dng") &&
+          isRawFile({ name: photo.name }) &&
+          photo.retouchSpots.length === 0;
+        if (highBitRawExport) {
+          const linear = await buildLinearRawExport(
+            photo,
+            {
+              sourceX: 0,
+              sourceY: 0,
+              sourceWidth: image.naturalWidth,
+              sourceHeight: image.naturalHeight,
+              width: canvas.width,
+              height: canvas.height,
+            },
+            outputSharpen,
+          );
+          blob = encodeLinearRgb16(
+            linear,
+            exportFormat === "tiff" ? "tiff16" : "dng16",
             proofProfile,
             photo.metadata.camera,
           );
-        } else if (exportFormat === "dng") {
+        } else if (exportFormat === "tiff" || exportFormat === "dng") {
           blob = encodeRgb16(
             context.getImageData(0, 0, canvas.width, canvas.height),
-            "dng16",
+            exportFormat === "tiff" ? "tiff16" : "dng16",
             proofProfile,
             photo.metadata.camera,
           );
@@ -9547,6 +9672,10 @@ function LibraryInspector({
             <div>
               <dt>RAW engine</dt>
               <dd>{photo.rawInfo.engine}</dd>
+            </div>
+            <div>
+              <dt>Develop master</dt>
+              <dd>32-bit float · Linear ProPhoto RGB</dd>
             </div>
             <div>
               <dt>Sensor</dt>

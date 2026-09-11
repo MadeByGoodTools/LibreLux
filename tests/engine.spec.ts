@@ -8,6 +8,8 @@ test("16-bit TIFF, linear DNG, and 32-bit HDR masters contain required tags", as
   const result = await page.evaluate(async () => {
     // @ts-expect-error Vite exposes this browser module during release QA.
     const engine = await import("/app/advanced-engine.ts");
+    // @ts-expect-error Vite exposes this browser module during release QA.
+    const linearEngine = await import("/app/linear-raw-engine.ts");
     const first = new ImageData(
       new Uint8ClampedArray([16, 80, 240, 255, 220, 130, 30, 255]),
       2,
@@ -42,6 +44,35 @@ test("16-bit TIFF, linear DNG, and 32-bit HDR masters contain required tags", as
     const hdr = await readTags(
       engine.encodeHdrFloat32(2, 1, merged.linear, "prophoto-rgb"),
     );
+    const fineSource = {
+      width: 2,
+      height: 1,
+      sourceBitDepth: 16,
+      workingSpace: "linear-prophoto-rgb" as const,
+      data: new Float32Array([
+        0.5, 0.4, 0.3,
+        0.5005, 0.4005, 0.3005,
+      ]),
+    };
+    const fineDeveloped = linearEngine.applyLinearDevelop(fineSource, {
+      exposure: 0.25,
+      contrast: 8,
+    });
+    const fineBlob = engine.encodeLinearRgb16(
+      fineDeveloped,
+      "tiff16",
+      "prophoto-rgb",
+    );
+    const fineBytes = new Uint8Array(await fineBlob.arrayBuffer());
+    const fineView = new DataView(fineBytes.buffer);
+    const fineIfd = fineView.getUint32(4, true);
+    const fineCount = fineView.getUint16(fineIfd, true);
+    let finePixelOffset = 0;
+    for (let index = 0; index < fineCount; index++) {
+      const entry = fineIfd + 2 + index * 12;
+      if (fineView.getUint16(entry, true) === 273)
+        finePixelOffset = fineView.getUint32(entry + 8, true);
+    }
     return {
       tiff,
       dng,
@@ -50,6 +81,10 @@ test("16-bit TIFF, linear DNG, and 32-bit HDR masters contain required tags", as
       converted: Array.from(
         engine.convertImageColorSpace(first, "adobe-rgb").data.slice(0, 3),
       ),
+      fineLinearSamples: [
+        fineView.getUint16(finePixelOffset, true),
+        fineView.getUint16(finePixelOffset + 6, true),
+      ],
     };
   });
   expect(result.tiff.prefix).toBe("II");
@@ -61,4 +96,6 @@ test("16-bit TIFF, linear DNG, and 32-bit HDR masters contain required tags", as
   expect(result.hdr.tags[339].count).toBe(3);
   expect(result.mergedLength).toBe(6);
   expect(result.converted).not.toEqual([16, 80, 240]);
+  expect(result.fineLinearSamples[1]).toBeGreaterThan(result.fineLinearSamples[0]);
+  expect(result.fineLinearSamples[1] - result.fineLinearSamples[0]).toBeLessThan(257);
 });

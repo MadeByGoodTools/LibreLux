@@ -315,6 +315,66 @@ export function encodeRgb16(
   );
 }
 
+const proPhotoToXyzD50 = [
+  0.7976749, 0.1351917, 0.0313534,
+  0.2880402, 0.7118741, 0.0000857,
+  0, 0, 0.82521,
+];
+const d50ToD65 = [
+  0.9555766, -0.0230393, 0.0631636,
+  -0.0282895, 1.0099416, 0.0210077,
+  0.0122982, -0.020483, 1.3299098,
+];
+
+const encodeSrgb = (value: number) => {
+  const safe = clamp01(value);
+  return safe <= 0.0031308
+    ? safe * 12.92
+    : 1.055 * safe ** (1 / 2.4) - 0.055;
+};
+
+/** Encode a scene-linear ProPhoto float master directly to real 16-bit RGB. */
+export function encodeLinearRgb16(
+  image: { width: number; height: number; data: Float32Array },
+  kind: "tiff16" | "dng16",
+  colorSpace: ExportColorSpace,
+  cameraModel = "LibreLux Linear RGB",
+) {
+  const pixels = new Uint8Array(image.width * image.height * 6);
+  const view = new DataView(pixels.buffer);
+  let target = 0;
+  for (let offset = 0; offset < image.data.length; offset += 3) {
+    const proPhoto = [
+      Math.max(0, image.data[offset]),
+      Math.max(0, image.data[offset + 1]),
+      Math.max(0, image.data[offset + 2]),
+    ];
+    let converted = proPhoto;
+    if (colorSpace !== "prophoto-rgb") {
+      const xyzD50 = multiply3(proPhotoToXyzD50, proPhoto);
+      const xyzD65 = multiply3(d50ToD65, xyzD50);
+      converted = multiply3(xyzToRgb[colorSpace], xyzD65);
+    }
+    const encoded = converted.map((value) =>
+      colorSpace === "srgb"
+        ? encodeSrgb(value)
+        : encodeGamma(value, gamma[colorSpace]),
+    );
+    view.setUint16(target, Math.round(clamp01(encoded[0]) * 65535), true);
+    view.setUint16(target + 2, Math.round(clamp01(encoded[1]) * 65535), true);
+    view.setUint16(target + 4, Math.round(clamp01(encoded[2]) * 65535), true);
+    target += 6;
+  }
+  return encodeTiff(
+    image.width,
+    image.height,
+    pixels,
+    kind,
+    colorSpace,
+    cameraModel,
+  );
+}
+
 export function mergeHdrFloat32(frames: ImageData[]) {
   if (!frames.length) throw new Error("HDR merge needs source frames");
   const { width, height } = frames[0];

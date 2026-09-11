@@ -22,12 +22,71 @@ export type DecodedSource = {
   sourceBitDepth: number;
 };
 
+export type LinearRawImage = {
+  width: number;
+  height: number;
+  data: Float32Array;
+  sourceBitDepth: number;
+  workingSpace: "linear-prophoto-rgb";
+};
+
 const rawPattern =
   /\.(3fr|ari|arw|bay|braw|cap|cr2|cr3|crw|dcr|dcs|dng|drf|eip|erf|fff|gpr|iiq|k25|kdc|mef|mos|mrw|nef|nrw|orf|pef|ptx|pxn|r3d|raf|raw|rwl|rw2|rwz|sr2|srf|srw|x3f)$/i;
 const tiffPattern = /\.(tif|tiff)$/i;
 
-export function isRawFile(file: File) {
+export function isRawFile(file: { name: string }) {
   return rawPattern.test(file.name);
+}
+
+const rawDecodeSettings = {
+  useCameraWb: true,
+  useCameraMatrix: 3,
+  outputBps: 16,
+  userQual: 11,
+  highlight: 5,
+  greenMatching: true,
+  fbddNoiserd: 1,
+  medPasses: 1,
+} as const;
+
+/** Decode a camera RAW into a wide-gamut, scene-linear floating-point master. */
+export async function decodeRawLinear(file: Blob): Promise<LinearRawImage> {
+  const { default: LibRaw } = await import("libraw-wasm");
+  const decoder = new LibRaw();
+  try {
+    await decoder.open(new Uint8Array(await file.arrayBuffer()), {
+      ...rawDecodeSettings,
+      outputColor: 4,
+      gamm: [1, 1],
+      noAutoBright: true,
+    });
+    const decoded = await decoder.imageData();
+    if (!decoded?.data || !decoded.width || !decoded.height)
+      throw new Error("RAW file did not produce linear pixels");
+    const colors = Math.max(1, decoded.colors || 3);
+    const maximum = decoded.data instanceof Uint16Array ? 65535 : 255;
+    const data = new Float32Array(decoded.width * decoded.height * 3);
+    for (let pixel = 0; pixel < decoded.width * decoded.height; pixel++) {
+      const sourceOffset = pixel * colors;
+      const targetOffset = pixel * 3;
+      data[targetOffset] = Number(decoded.data[sourceOffset] ?? 0) / maximum;
+      data[targetOffset + 1] =
+        Number(decoded.data[sourceOffset + Math.min(1, colors - 1)] ?? 0) /
+        maximum;
+      data[targetOffset + 2] =
+        Number(decoded.data[sourceOffset + Math.min(2, colors - 1)] ?? 0) /
+        maximum;
+    }
+    return {
+      width: decoded.width,
+      height: decoded.height,
+      data,
+      sourceBitDepth: decoded.bits || 16,
+      workingSpace: "linear-prophoto-rgb",
+    };
+  } finally {
+    decoder.dispose();
+  }
 }
 
 export function isTiffFile(file: File) {
@@ -64,15 +123,8 @@ async function decodeRaw(file: File): Promise<DecodedSource> {
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     await decoder.open(bytes, {
-      useCameraWb: true,
-      useCameraMatrix: 3,
+      ...rawDecodeSettings,
       outputColor: 1,
-      outputBps: 16,
-      userQual: 11,
-      highlight: 5,
-      greenMatching: true,
-      fbddNoiserd: 1,
-      medPasses: 1,
       noAutoBright: false,
     });
     const [metadata, decoded] = await Promise.all([

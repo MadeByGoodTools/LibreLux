@@ -12,6 +12,7 @@ LibreLux is a free, open-source photo workflow and RAW editing web app from [Goo
 
 - Library, Develop, and Optics workspaces
 - RAW and common image import with non-destructive editing
+- Scene-linear 32-bit floating-point RAW development for true 16-bit TIFF and DNG output
 - Exposure, tone curves, HSL, color grading, calibration, B&W mixing, and soft proofing
 - Local masks for subjects, hair, skin, clothes, sky, backgrounds, luminance, color, and depth ranges
 - Lens correction, denoise, detail recovery, creative effects, film emulation, and measured profiles
