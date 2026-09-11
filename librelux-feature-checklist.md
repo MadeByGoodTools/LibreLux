@@ -420,3 +420,107 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — Progress center with pause and cancellation
 - [ ] Planned — In-app learning overlays that can be disabled
 - [ ] Planned — Full release checklist, browser matrix, and regression suite
+
+
+## Batch 4 — 100 completed precision, preset, save-location, and Optics additions
+
+- [x] Done — Browser capability detection for editable export destinations
+- [x] Done — Choose-save-location control in Export
+- [x] Done — Change-save-location control after a folder is connected
+- [x] Done — Reset-save-location control back to browser Downloads
+- [x] Done — Local or external-drive folders through the browser folder picker
+- [x] Done — Export folder handles stored in IndexedDB
+- [x] Done — Saved folder handles restored after reopening LibreLux
+- [x] Done — Connected destination name shown before export
+- [x] Done — Connected-and-remembered destination state
+- [x] Done — Permission-needed destination state
+- [x] Done — Unsupported-browser destination state
+- [x] Done — Write permission requested only when necessary
+- [x] Done — Finished image written directly to the chosen folder
+- [x] Done — Denied folder permission falls back safely to Downloads
+- [x] Done — All save-location preferences remain browser-local
+- [x] Done — Preset selection no longer changes the image immediately
+- [x] Done — Selected Develop presets receive a persistent outline
+- [x] Done — Clicking a selected preset again deselects it
+- [x] Done — Pending preset name appears in the confirmation bar
+- [x] Done — Pending preset shows a Ready to apply state
+- [x] Done — Explicit Apply button for every pending preset
+- [x] Done — Apply removes the selected-preset outline
+- [x] Done — Cancel removes the selected-preset outline without editing
+- [x] Done — Preset application creates an undo point
+- [x] Done — Preset application clears an invalid redo branch
+- [x] Done — Clean Light staged preset workflow
+- [x] Done — Quiet Film staged preset workflow
+- [x] Done — Deep Chrome staged preset workflow
+- [x] Done — Warm Portrait staged preset workflow
+- [x] Done — Silver staged preset workflow
+- [x] Done — Night Air staged preset workflow
+- [x] Done — HQ processing-quality staged workflow
+- [x] Done — Deep processing-quality staged workflow
+- [x] Done — Detail+ processing-quality staged workflow
+- [x] Done — Color Lift creative-look staged workflow
+- [x] Done — Silver Study creative-look staged workflow
+- [x] Done — Soft Focus creative-look staged workflow
+- [x] Done — HDR Drama creative-look staged workflow
+- [x] Done — Vintage Lens creative-look staged workflow
+- [x] Done — Night Detail creative-look staged workflow
+- [x] Done — Daylight 64 film-look staged workflow
+- [x] Done — Chrome 100 film-look staged workflow
+- [x] Done — Portrait 160 film-look staged workflow
+- [x] Done — Press 400 film-look staged workflow
+- [x] Done — One clear pending preset shared across preset families
+- [x] Done — Magic Point connected-region selection mode
+- [x] Done — Hair-labelled precision selection mode
+- [x] Done — Skin-labelled precision selection mode
+- [x] Done — Clothes-labelled precision selection mode
+- [x] Done — Sky-labelled precision selection mode
+- [x] Done — Crosshair pointer while sampling an image region
+- [x] Done — On-image click instruction while selection is active
+- [x] Done — Cancel-selection control
+- [x] Done — Normalized click coordinates across preview sizes
+- [x] Done — Bounded 512-pixel local analysis for responsive large-photo selection
+- [x] Done — Exact seed-pixel RGB sampling
+- [x] Done — Connected-region flood-fill selection
+- [x] Done — Four-direction continuity that avoids disconnected matching colors
+- [x] Done — Adjustable color-tolerance control
+- [x] Done — Tolerance translated into RGB-distance thresholding
+- [x] Done — Transparent pixels excluded from selection
+- [x] Done — Adjustable edge-feather control
+- [x] Done — Feathered alpha-mask generation
+- [x] Done — Compact PNG mask storage
+- [x] Done — Unique identity for every local mask
+- [x] Done — Automatic target-aware mask names
+- [x] Done — Masks persisted with the photo in IndexedDB
+- [x] Done — Backward-compatible normalization for older saved photos
+- [x] Done — Mask preservation in virtual copies
+- [x] Done — Independent IDs for masks copied into virtual copies
+- [x] Done — Live mask-count badge
+- [x] Done — Saved-mask list in the Develop panel
+- [x] Done — Selected-mask outline in the mask list
+- [x] Done — Target-colored mask chips
+- [x] Done — Click-to-select saved masks
+- [x] Done — Animated magic-highlight overlay
+- [x] Done — Highlight overlay clipped to the selected region
+- [x] Done — Per-mask visibility toggle
+- [x] Done — Hidden masks excluded from the live adjustment layer
+- [x] Done — Per-mask invert control
+- [x] Done — Editable mask names
+- [x] Done — Duplicate-mask action with independent adjustments
+- [x] Done — Delete-mask action
+- [x] Done — Local exposure adjustment
+- [x] Done — Local contrast adjustment
+- [x] Done — Local saturation adjustment
+- [x] Done — Local temperature adjustment
+- [x] Done — Local clarity adjustment
+- [x] Done — Multiple simultaneous local masks
+- [x] Done — Local adjustments clipped to mask alpha during preview
+- [x] Done — Vertical perspective included in finished exports
+- [x] Done — Horizontal perspective included in finished exports
+- [x] Done — Optical scale included in finished exports
+- [x] Done — Distortion correction scale included in finished exports
+- [x] Done — Horizontal offset included in finished exports
+- [x] Done — Vertical offset included in finished exports
+- [x] Done — Rotation included in finished exports
+- [x] Done — Horizontal and vertical flips included in finished exports
+- [x] Done — Local mask adjustments included in finished exports
+- [x] Done — Hidden masks excluded from finished exports
