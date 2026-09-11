@@ -65,6 +65,56 @@ body {
   height: 100%;
   overflow: hidden;
 }
+.skip-link {
+  position: fixed;
+  z-index: 1000;
+  left: 12px;
+  top: -60px;
+  padding: 9px 12px;
+  border-radius: 6px;
+  background: #b6f36b;
+  color: #10140f;
+  font-weight: 700;
+}
+.skip-link:focus {
+  top: 12px;
+}
+.app-shell.large-text {
+  font-size: 200%;
+}
+.app-shell.large-text button,
+.app-shell.large-text input,
+.app-shell.large-text select,
+.app-shell.large-text textarea {
+  font-size: max(12px, 0.55em);
+}
+.learning-overlay {
+  position: absolute;
+  z-index: 8;
+  top: 50px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(680px, 80%);
+  padding: 7px 9px 7px 12px;
+  border: 1px solid #4d6045;
+  border-radius: 7px;
+  background: rgba(23, 30, 22, 0.94);
+  color: #d7e5d4;
+  font-size: 10px;
+  box-shadow: 0 8px 28px #0008;
+}
+.learning-overlay button {
+  border: 0;
+  background: transparent;
+  color: #b5c0b7;
+}
+.learning-overlay svg {
+  width: 14px;
+  height: 14px;
+}
 body {
   margin: 0;
   background: var(--background);
@@ -1755,6 +1805,16 @@ button {
   position: relative;
   z-index: 1;
 }
+.dust-visualization {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  filter: grayscale(1) invert(1) contrast(5) brightness(0.65);
+  mix-blend-mode: screen;
+}
 .crop-handle {
   position: absolute;
   z-index: 4;
@@ -2816,6 +2876,92 @@ button {
   background: #181c19;
   border-color: #39413b;
   color: #eef1ed;
+}
+.tether-dialog video {
+  width: 100%;
+  max-height: 58vh;
+  border-radius: 8px;
+  background: #070908;
+  object-fit: contain;
+}
+.ai-history {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid #303832;
+  border-radius: 6px;
+  background: #171b18;
+  font-size: 9px;
+}
+.ai-history span {
+  color: #9aa49c;
+}
+.optics-profile-list {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0;
+}
+.optics-profile-list button {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 7px;
+  border: 1px solid #303832;
+  border-radius: 6px;
+  background: #1a1f1b;
+  color: #d8e0da;
+}
+.optics-profile-list span {
+  color: #8f9991;
+  font-size: 9px;
+}
+.progress-button {
+  border: 1px solid #303832;
+  border-radius: 5px;
+  background: #191e1a;
+  color: #aeb7b0;
+  padding: 4px 8px;
+  font-size: 10px;
+}
+.progress-jobs {
+  display: grid;
+  gap: 6px;
+  max-height: 52vh;
+  overflow: auto;
+}
+.progress-jobs > div {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) 2fr 70px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px;
+  border: 1px solid #303832;
+  border-radius: 6px;
+  font-size: 10px;
+}
+.progress-jobs progress {
+  width: 100%;
+  accent-color: #b6f36b;
+}
+.progress-jobs b {
+  color: #9da79f;
+  text-transform: capitalize;
+}
+.slideshow-dialog {
+  width: min(94vw, 1100px);
+  max-width: 1100px;
+}
+.slideshow-dialog > img {
+  width: 100%;
+  height: min(70vh, 760px);
+  object-fit: contain;
+  background: #070908;
+  border-radius: 8px;
+}
+.slideshow-dialog > strong {
+  text-align: center;
+  color: #dce4de;
 }
 .command-list {
   display: flex;

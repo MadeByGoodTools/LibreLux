@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import {
   Aperture,
   ArrowDownToLine,
@@ -53,6 +55,7 @@ import {
 type Workspace = "library" | "develop" | "enhance";
 type OpticsMode = "pure" | "creative" | "film";
 type ColorSpace = "srgb" | "display-p3" | "adobe-rgb" | "prophoto-rgb";
+type ExportFormat = "jpeg" | "png" | "webp" | "avif" | "tiff" | "dng";
 type Label = "none" | "red" | "yellow" | "green" | "blue" | "purple";
 type ColorBand =
   | "red"
@@ -82,7 +85,15 @@ type MaskTarget =
   | "linear"
   | "radial"
   | "luminance"
-  | "color";
+  | "color"
+  | "depth"
+  | "subject"
+  | "background"
+  | "object"
+  | "person"
+  | "face"
+  | "eyes"
+  | "teeth";
 type LocalAdjustments = {
   exposure: number;
   contrast: number;
@@ -108,7 +119,7 @@ type PointColorSample = {
   range: number;
   variance: number;
 };
-type RetouchMode = "heal" | "clone" | "remove" | "redEye";
+type RetouchMode = "heal" | "clone" | "remove" | "generativeRemove" | "redEye";
 type RetouchSpot = {
   id: string;
   mode: RetouchMode;
@@ -215,6 +226,21 @@ type Adjustments = {
   age: number;
   chromaticShift: number;
   glassDistortion: number;
+  hdrGain: number;
+  wideGamut: number;
+  volumeDeform: number;
+  glareReduction: number;
+  dustRemoval: number;
+  highlightRecovery: number;
+  hotPixelRepair: number;
+  moireReduction: number;
+  neuralDenoise: number;
+  deconvolution: number;
+  coarseContrast: number;
+  superResolution: number;
+  lensBlur: number;
+  cornerSharpness: number;
+  apertureCorrection: number;
   hsl: HslState;
   bwMix: Record<ColorBand, number>;
   curves: CurveState;
@@ -266,6 +292,13 @@ type PhotoRecord = {
   missing: boolean;
   processVersion: "2026" | "2025";
   previewBlob: Blob | null;
+  aiHistory: Array<{
+    id: string;
+    action: string;
+    model: string;
+    createdAt: number;
+  }>;
+  peopleCluster: string;
 };
 type RuntimePhoto = PhotoRecord & { url: string; previewUrl: string };
 type PresetChoice = {
@@ -298,7 +331,7 @@ type AlbumRecord = {
 type ExportRecipe = {
   id: string;
   name: string;
-  format: "jpeg" | "png" | "webp";
+  format: ExportFormat;
   quality: number;
   scale: number;
   longEdge: number;
@@ -306,6 +339,21 @@ type ExportRecipe = {
   outputSharpen: "none" | "screen" | "matte" | "glossy";
   suffix: string;
   watermark: string;
+};
+type ProgressJob = {
+  id: string;
+  name: string;
+  kind: "import" | "analyze" | "export" | "merge";
+  progress: number;
+  status: "queued" | "running" | "paused" | "done" | "cancelled" | "failed";
+};
+type OpticsProfile = {
+  id: string;
+  version: number;
+  camera: string;
+  lens: string;
+  settings: Partial<Adjustments>;
+  source: "LibreLux community" | "User import";
 };
 
 interface WritableFileHandle {
@@ -487,6 +535,21 @@ const defaults: Adjustments = {
   age: 0,
   chromaticShift: 0,
   glassDistortion: 0,
+  hdrGain: 0,
+  wideGamut: 0,
+  volumeDeform: 0,
+  glareReduction: 0,
+  dustRemoval: 0,
+  highlightRecovery: 0,
+  hotPixelRepair: 0,
+  moireReduction: 0,
+  neuralDenoise: 0,
+  deconvolution: 0,
+  coarseContrast: 0,
+  superResolution: 100,
+  lensBlur: 0,
+  cornerSharpness: 0,
+  apertureCorrection: 0,
   hsl: defaultHsl,
   bwMix: defaultBw,
   curves: defaultCurves,
@@ -508,6 +571,32 @@ const emptyMetadata: PhotoMetadata = {
   latitude: null,
   longitude: null,
 };
+const communityOpticsProfiles: OpticsProfile[] = [
+  {
+    id: "community-standard-24",
+    version: 1,
+    camera: "Full-frame mirrorless",
+    lens: "24 mm wide angle",
+    settings: { distortion: 16, lensVignette: 18, cornerSharpness: 28 },
+    source: "LibreLux community",
+  },
+  {
+    id: "community-standard-50",
+    version: 1,
+    camera: "Full-frame mirrorless",
+    lens: "50 mm standard",
+    settings: { distortion: 3, lensVignette: 12, cornerSharpness: 18 },
+    source: "LibreLux community",
+  },
+  {
+    id: "community-portrait-85",
+    version: 1,
+    camera: "Interchangeable lens camera",
+    lens: "85 mm portrait",
+    settings: { distortion: -2, lensVignette: 16, cornerSharpness: 10 },
+    source: "LibreLux community",
+  },
+];
 const presets = [
   {
     name: "Clean Light",
@@ -908,7 +997,15 @@ function cssFilter(a: Adjustments, processVersion: "2026" | "2025" = "2026") {
       a.greenPrimarySaturation +
       a.bluePrimarySaturation) /
     1200;
-  const tonal = (a.highlights + a.whites - a.blacks + a.shadows) / 900;
+  const tonal =
+    (a.highlights +
+      a.whites -
+      a.blacks +
+      a.shadows +
+      a.highlightRecovery * 0.6 +
+      a.hdrGain * 1.4 -
+      a.glareReduction * 0.35) /
+    900;
   const brightness = Math.max(
     0.12,
     Math.pow(2, a.exposure) *
@@ -921,20 +1018,24 @@ function cssFilter(a: Adjustments, processVersion: "2026" | "2025" = "2026") {
       a.clarity / (legacy ? 310 : 250) +
       a.dehaze / (legacy ? 390 : 320) +
       a.sharpness / 900 +
-      a.lensSharpness / 1000 -
-      a.fade / 260,
+      a.lensSharpness / 1000 +
+      a.coarseContrast / 220 +
+      a.deconvolution / 1100 +
+      a.cornerSharpness / 1400 +
+      -a.fade / 260,
   );
   const saturation = Math.max(
     0,
     (1 +
       (a.saturation * intensity) / 100 +
       a.vibrance / 160 -
-      a.colorNoise / 1200 -
+      (a.colorNoise + a.moireReduction * 0.35) / 1200 -
       a.age / 500 +
       hslSat +
       calibration +
       channelSat) *
-      (a.profileAmount / 100),
+      (a.profileAmount / 100) *
+      (1 + a.wideGamut / 500),
   );
   const warmth = Math.abs(a.temperature * intensity) / 600;
   const grade =
@@ -961,10 +1062,16 @@ function cssFilter(a: Adjustments, processVersion: "2026" | "2025" = "2026") {
     intensity;
   const blur = Math.max(
     0,
-    a.noise / 180 -
+    (a.noise +
+      a.neuralDenoise * 0.7 +
+      a.hotPixelRepair * 0.15 +
+      a.moireReduction * 0.18 +
+      a.dustRemoval * 0.1) /
+      180 -
       a.sharpDetail / 3000 +
       a.bloom / 1300 +
-      a.glassDistortion / 1800,
+      a.glassDistortion / 1800 +
+      a.lensBlur / 70,
   );
   return `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) sepia(${warmth}) hue-rotate(${hue}deg) blur(${blur}px)`;
 }
@@ -979,6 +1086,70 @@ function localFilter(a: LocalAdjustments) {
   const saturation = a.saturation / 100 + a.vibrance / 140;
   const blur = Math.max(0, a.noise / 180 - a.sharpness / 650 - a.texture / 900);
   return `brightness(${Math.max(0.15, Math.pow(2, light))}) contrast(${Math.max(0.2, 1 + contrast)}) saturate(${Math.max(0, 1 + saturation)}) sepia(${Math.abs(a.temperature) / 650}) hue-rotate(${a.hue + (a.temperature < 0 ? -a.temperature / 18 : 0) + a.tint / 30}deg) blur(${blur}px)`;
+}
+function applyComputationalCorrections(
+  context: CanvasRenderingContext2D,
+  adjustments: Adjustments,
+) {
+  if (
+    adjustments.highlightRecovery <= 0 &&
+    adjustments.hotPixelRepair <= 0 &&
+    adjustments.dustRemoval <= 0 &&
+    adjustments.moireReduction <= 0
+  )
+    return;
+  const width = context.canvas.width;
+  const height = context.canvas.height;
+  const image = context.getImageData(0, 0, width, height);
+  const source = new Uint8ClampedArray(image.data);
+  const highlight = adjustments.highlightRecovery / 100;
+  const repair = Math.max(
+    adjustments.hotPixelRepair / 100,
+    adjustments.dustRemoval / 150,
+  );
+  const moire = adjustments.moireReduction / 100;
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const offset = (y * width + x) * 4;
+      const neighbors = [0, 1, 2].map(
+        (channel) =>
+          (source[offset - 4 + channel] +
+            source[offset + 4 + channel] +
+            source[offset - width * 4 + channel] +
+            source[offset + width * 4 + channel]) /
+          4,
+      );
+      for (let channel = 0; channel < 3; channel++) {
+        const value = source[offset + channel];
+        if (value > 238 && highlight > 0) {
+          const other =
+            (source[offset + ((channel + 1) % 3)] +
+              source[offset + ((channel + 2) % 3)]) /
+            2;
+          image.data[offset + channel] = Math.round(
+            value * (1 - highlight * 0.45) +
+              Math.min(255, other * 1.12) * highlight * 0.45,
+          );
+        }
+        if (repair > 0 && Math.abs(value - neighbors[channel]) > 95)
+          image.data[offset + channel] = Math.round(
+            value * (1 - repair) + neighbors[channel] * repair,
+          );
+      }
+      if (moire > 0) {
+        const localRange =
+          Math.max(source[offset], source[offset + 1], source[offset + 2]) -
+          Math.min(source[offset], source[offset + 1], source[offset + 2]);
+        if (localRange > 70)
+          for (let channel = 0; channel < 3; channel++)
+            image.data[offset + channel] = Math.round(
+              image.data[offset + channel] * (1 - moire * 0.35) +
+                neighbors[channel] * moire * 0.35,
+            );
+      }
+    }
+  }
+  context.putImageData(image, 0, 0);
 }
 
 async function readImagePixels(url: string, size = 192) {
@@ -1123,6 +1294,32 @@ async function analyzeImportFile(
   }
 }
 async function createSmartPreview(file: Blob): Promise<Blob | null> {
+  if (
+    typeof Worker !== "undefined" &&
+    typeof OffscreenCanvas !== "undefined" &&
+    typeof createImageBitmap !== "undefined"
+  ) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const memory = (navigator as Navigator & { deviceMemory?: number })
+        .deviceMemory;
+      const maxEdge = memory && memory <= 4 ? 1200 : 2000;
+      return await new Promise<Blob | null>((resolve) => {
+        const worker = new Worker("/image-worker.js");
+        worker.onmessage = (event) => {
+          worker.terminate();
+          resolve(event.data?.blob instanceof Blob ? event.data.blob : null);
+        };
+        worker.onerror = () => {
+          worker.terminate();
+          resolve(null);
+        };
+        worker.postMessage({ bitmap, maxEdge }, [bitmap]);
+      });
+    } catch {
+      // Continue through the main-thread compatibility path below.
+    }
+  }
   const url = URL.createObjectURL(file);
   try {
     const image = new Image();
@@ -1475,10 +1672,12 @@ export default function Home() {
   >("thirds");
   const [zoom, setZoom] = useState(68);
   const [exportOpen, setExportOpen] = useState(false);
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [progressJobs, setProgressJobs] = useState<ProgressJob[]>([]);
+  const cancelJobsRef = useRef(false);
+  const pauseJobsRef = useRef(false);
   const [exportQuality, setExportQuality] = useState(92);
-  const [exportFormat, setExportFormat] = useState<"jpeg" | "png" | "webp">(
-    "jpeg",
-  );
+  const [exportFormat, setExportFormat] = useState<ExportFormat>("jpeg");
   const [exportScale, setExportScale] = useState(100);
   const [exportLongEdge, setExportLongEdge] = useState(0);
   const [exportShortEdge, setExportShortEdge] = useState(0);
@@ -1546,6 +1745,8 @@ export default function Home() {
   const [highContrast, setHighContrast] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const [compactUi, setCompactUi] = useState(false);
+  const [largeText, setLargeText] = useState(false);
+  const [learningTips, setLearningTips] = useState(true);
   const [showFilmstrip, setShowFilmstrip] = useState(true);
   const [gridSize, setGridSize] = useState(155);
   const [showClipping, setShowClipping] = useState(false);
@@ -1555,12 +1756,30 @@ export default function Home() {
   const [pointColor, setPointColor] = useState<PointColorSample | null>(null);
   const [userPresets, setUserPresets] = useState<UserPreset[]>([]);
   const presetImportRef = useRef<HTMLInputElement>(null);
+  const lutImportRef = useRef<HTMLInputElement>(null);
+  const psdImportRef = useRef<HTMLInputElement>(null);
+  const opticsProfileRef = useRef<HTMLInputElement>(null);
+  const [opticsProfiles, setOpticsProfiles] = useState<OpticsProfile[]>(
+    communityOpticsProfiles,
+  );
   const catalogImportRef = useRef<HTMLInputElement>(null);
   const [catalogStatus, setCatalogStatus] = useState("");
   const [watchDirectory, setWatchDirectory] =
     useState<StoredDirectoryHandle | null>(null);
   const [watchStatus, setWatchStatus] = useState("");
+  const [importOrganization, setImportOrganization] = useState<
+    "source" | "date" | "custom"
+  >("source");
+  const [importDestination, setImportDestination] = useState("Imported photos");
+  const [duplicateImport, setDuplicateImport] = useState<"skip" | "copy">(
+    "skip",
+  );
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [tetherOpen, setTetherOpen] = useState(false);
+  const [tetherStream, setTetherStream] = useState<MediaStream | null>(null);
+  const tetherVideoRef = useRef<HTMLVideoElement>(null);
+  const [slideshowOpen, setSlideshowOpen] = useState(false);
+  const [slideshowIndex, setSlideshowIndex] = useState(0);
   const [proofProfile, setProofProfile] = useState<ColorSpace>("srgb");
   const [softProof, setSoftProof] = useState(false);
   const [gamutWarnings, setGamutWarnings] = useState(false);
@@ -1705,6 +1924,8 @@ export default function Home() {
             missing: p.missing ?? false,
             processVersion: p.processVersion ?? "2026",
             previewBlob: p.previewBlob ?? null,
+            aiHistory: p.aiHistory ?? [],
+            peopleCluster: p.peopleCluster ?? "",
             masks: (p.masks ?? []).map((mask) => ({
               ...mask,
               visible: mask.visible ?? true,
@@ -1765,16 +1986,32 @@ export default function Home() {
       readSetting<ExportRecipe[]>("export-recipes"),
       readSetting<UserPreset[]>("user-presets"),
       readSetting<typeof shortcutMap>("shortcut-map"),
+      readSetting<OpticsProfile[]>("community-optics-profiles"),
+      readSetting<{
+        organization: "source" | "date" | "custom";
+        destination: string;
+        duplicates: "skip" | "copy";
+      }>("import-preset"),
       readSetting<{
         highContrast?: boolean;
         reducedMotion?: boolean;
         compactUi?: boolean;
+        largeText?: boolean;
+        learningTips?: boolean;
         showFilmstrip?: boolean;
         gridSize?: number;
       }>("ui-preferences"),
     ])
       .then(
-        ([savedAlbums, savedRecipes, savedPresets, savedShortcuts, prefs]) => {
+        ([
+          savedAlbums,
+          savedRecipes,
+          savedPresets,
+          savedShortcuts,
+          savedOpticsProfiles,
+          importPreset,
+          prefs,
+        ]) => {
           if (savedAlbums)
             setAlbums(
               savedAlbums.map((album) => ({
@@ -1796,10 +2033,27 @@ export default function Home() {
           if (savedPresets) setUserPresets(savedPresets);
           if (savedShortcuts)
             setShortcutMap((current) => ({ ...current, ...savedShortcuts }));
+          if (savedOpticsProfiles)
+            setOpticsProfiles([
+              ...communityOpticsProfiles,
+              ...savedOpticsProfiles.filter(
+                (profile) =>
+                  !communityOpticsProfiles.some(
+                    (builtIn) => builtIn.id === profile.id,
+                  ),
+              ),
+            ]);
+          if (importPreset) {
+            setImportOrganization(importPreset.organization);
+            setImportDestination(importPreset.destination);
+            setDuplicateImport(importPreset.duplicates);
+          }
           if (prefs) {
             setHighContrast(Boolean(prefs.highContrast));
             setReducedMotion(Boolean(prefs.reducedMotion));
             setCompactUi(Boolean(prefs.compactUi));
+            setLargeText(Boolean(prefs.largeText));
+            setLearningTips(prefs.learningTips !== false);
             setShowFilmstrip(prefs.showFilmstrip !== false);
             setGridSize(prefs.gridSize ?? 155);
           }
@@ -1900,126 +2154,210 @@ export default function Home() {
     },
     [selected, updateSelected],
   );
-  const importFiles = useCallback(async (fileList: FileList | File[]) => {
-    const files = Array.from(fileList).filter((file) =>
-      file.type.startsWith("image/"),
-    );
-    const imported = await Promise.all(
-      files.map(async (file) => {
-        const relative =
-          (file as File & { webkitRelativePath?: string }).webkitRelativePath ??
-          "";
-        const now = Date.now();
-        let parsed: Record<string, unknown> = {};
-        try {
-          parsed =
-            ((await exifr.parse(file, {
-              tiff: true,
-              exif: true,
-              gps: true,
-              iptc: true,
-              xmp: true,
-            })) as Record<string, unknown>) ?? {};
-        } catch {
-          parsed = {};
-        }
-        const [analysis, previewBlob] = await Promise.all([
-          analyzeImportFile(file).catch(() => ({
-            perceptualHash: "",
-            cull: { focus: 0, exposure: 0, faces: 0, similarity: 0 },
+  const importFiles = useCallback(
+    async (fileList: FileList | File[]) => {
+      const files = Array.from(fileList).filter(
+        (file) =>
+          (file.type.startsWith("image/") ||
+            /\.(heic|heif)$/i.test(file.name)) &&
+          (duplicateImport === "copy" ||
+            !photos.some(
+              (photo) => photo.name === file.name && photo.size === file.size,
+            )),
+      );
+      const jobIds = files.map(() => crypto.randomUUID());
+      if (files.length)
+        setProgressJobs((current) => [
+          ...current.filter((job) => job.status === "running"),
+          ...files.map((file, index) => ({
+            id: jobIds[index],
+            name: file.name,
+            kind: "import" as const,
+            progress: 5,
+            status: "queued" as const,
           })),
-          createSmartPreview(file),
         ]);
-        const keywordSource =
-          parsed.Keywords ?? parsed.Subject ?? parsed.subject;
-        const keywords = Array.isArray(keywordSource)
-          ? keywordSource.map(String)
-          : typeof keywordSource === "string"
-            ? keywordSource
-                .split(/[,;]/)
-                .map((value) => value.trim())
+      const imported = await Promise.all(
+        files.map(async (sourceFile, sourceIndex) => {
+          const jobId = jobIds[sourceIndex];
+          setProgressJobs((current) =>
+            current.map((job) =>
+              job.id === jobId
+                ? { ...job, status: "running", progress: 20 }
+                : job,
+            ),
+          );
+          let file = sourceFile;
+          if (/\.(heic|heif)$/i.test(sourceFile.name)) {
+            try {
+              const { default: heic2any } = await import("heic2any");
+              const converted = await heic2any({
+                blob: sourceFile,
+                toType: "image/jpeg",
+                quality: 0.94,
+              });
+              const blob = Array.isArray(converted) ? converted[0] : converted;
+              file = new File(
+                [blob],
+                sourceFile.name.replace(/\.(heic|heif)$/i, ".jpg"),
+                { type: "image/jpeg", lastModified: sourceFile.lastModified },
+              );
+            } catch {
+              setCatalogStatus(
+                `Could not decode ${sourceFile.name} in this browser`,
+              );
+              setProgressJobs((current) =>
+                current.map((job) =>
+                  job.id === jobId ? { ...job, status: "failed" } : job,
+                ),
+              );
+              return null;
+            }
+          }
+          const relative =
+            (file as File & { webkitRelativePath?: string })
+              .webkitRelativePath ?? "";
+          const now = Date.now();
+          let parsed: Record<string, unknown> = {};
+          try {
+            parsed =
+              ((await exifr.parse(file, {
+                tiff: true,
+                exif: true,
+                gps: true,
+                iptc: true,
+                xmp: true,
+              })) as Record<string, unknown>) ?? {};
+          } catch {
+            parsed = {};
+          }
+          const [analysis, previewBlob] = await Promise.all([
+            analyzeImportFile(file).catch(() => ({
+              perceptualHash: "",
+              cull: { focus: 0, exposure: 0, faces: 0, similarity: 0 },
+            })),
+            createSmartPreview(file),
+          ]);
+          setProgressJobs((current) =>
+            current.map((job) =>
+              job.id === jobId ? { ...job, progress: 75 } : job,
+            ),
+          );
+          const keywordSource =
+            parsed.Keywords ?? parsed.Subject ?? parsed.subject;
+          const keywords = Array.isArray(keywordSource)
+            ? keywordSource.map(String)
+            : typeof keywordSource === "string"
+              ? keywordSource
+                  .split(/[,;]/)
+                  .map((value) => value.trim())
+                  .filter(Boolean)
+              : [];
+          const captured =
+            parsed.DateTimeOriginal instanceof Date
+              ? parsed.DateTimeOriginal.toISOString()
+              : parsed.CreateDate instanceof Date
+                ? parsed.CreateDate.toISOString()
+                : "";
+          const record: PhotoRecord = {
+            id: crypto.randomUUID(),
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            createdAt: now,
+            editedAt: now,
+            rating: 0,
+            flagged: false,
+            rejected: false,
+            label: "none",
+            folder:
+              importOrganization === "date"
+                ? captured.slice(0, 7) || new Date().toISOString().slice(0, 7)
+                : importOrganization === "custom"
+                  ? importDestination.trim() || "Imported photos"
+                  : relative.split("/").slice(0, -1).join("/") ||
+                    "Local library",
+            virtualOf: null,
+            blob: file,
+            adjustments: {
+              ...defaults,
+              hsl: { ...defaultHsl },
+              bwMix: { ...defaultBw },
+              curves: { ...defaultCurves },
+            },
+            metadata: {
+              ...emptyMetadata,
+              title: String(parsed.ObjectName ?? parsed.Title ?? ""),
+              caption: String(
+                parsed.ImageDescription ??
+                  parsed.Caption ??
+                  parsed.description ??
+                  "",
+              ),
+              creator: String(
+                parsed.Artist ?? parsed.Creator ?? parsed.creator ?? "",
+              ),
+              copyright: String(
+                parsed.Copyright ?? parsed.CopyrightNotice ?? "",
+              ),
+              keywords,
+              camera: [parsed.Make, parsed.Model]
                 .filter(Boolean)
-            : [];
-        const captured =
-          parsed.DateTimeOriginal instanceof Date
-            ? parsed.DateTimeOriginal.toISOString()
-            : parsed.CreateDate instanceof Date
-              ? parsed.CreateDate.toISOString()
-              : "";
-        const record: PhotoRecord = {
-          id: crypto.randomUUID(),
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          createdAt: now,
-          editedAt: now,
-          rating: 0,
-          flagged: false,
-          rejected: false,
-          label: "none",
-          folder: relative.split("/").slice(0, -1).join("/") || "Local library",
-          virtualOf: null,
-          blob: file,
-          adjustments: {
-            ...defaults,
-            hsl: { ...defaultHsl },
-            bwMix: { ...defaultBw },
-            curves: { ...defaultCurves },
-          },
-          metadata: {
-            ...emptyMetadata,
-            title: String(parsed.ObjectName ?? parsed.Title ?? ""),
-            caption: String(
-              parsed.ImageDescription ??
-                parsed.Caption ??
-                parsed.description ??
-                "",
+                .map(String)
+                .join(" "),
+              lens: String(parsed.LensModel ?? parsed.Lens ?? ""),
+              capturedAt: captured,
+              iso: parsed.ISO ? String(parsed.ISO) : "",
+              aperture: parsed.FNumber ? `f/${parsed.FNumber}` : "",
+              shutter: parsed.ExposureTime ? String(parsed.ExposureTime) : "",
+              focalLength: parsed.FocalLength ? `${parsed.FocalLength} mm` : "",
+              latitude:
+                typeof parsed.latitude === "number" ? parsed.latitude : null,
+              longitude:
+                typeof parsed.longitude === "number" ? parsed.longitude : null,
+            },
+            masks: [],
+            retouchSpots: [],
+            perceptualHash: analysis.perceptualHash,
+            cull: analysis.cull,
+            stackId: null,
+            missing: false,
+            processVersion: "2026",
+            previewBlob,
+            aiHistory: [],
+            peopleCluster:
+              analysis.cull.faces > 0
+                ? `Person ${analysis.perceptualHash.slice(0, 4).toUpperCase()}`
+                : "",
+          };
+          void savePhoto(record);
+          setProgressJobs((current) =>
+            current.map((job) =>
+              job.id === jobId
+                ? { ...job, status: "done", progress: 100 }
+                : job,
             ),
-            creator: String(
-              parsed.Artist ?? parsed.Creator ?? parsed.creator ?? "",
-            ),
-            copyright: String(parsed.Copyright ?? parsed.CopyrightNotice ?? ""),
-            keywords,
-            camera: [parsed.Make, parsed.Model]
-              .filter(Boolean)
-              .map(String)
-              .join(" "),
-            lens: String(parsed.LensModel ?? parsed.Lens ?? ""),
-            capturedAt: captured,
-            iso: parsed.ISO ? String(parsed.ISO) : "",
-            aperture: parsed.FNumber ? `f/${parsed.FNumber}` : "",
-            shutter: parsed.ExposureTime ? String(parsed.ExposureTime) : "",
-            focalLength: parsed.FocalLength ? `${parsed.FocalLength} mm` : "",
-            latitude:
-              typeof parsed.latitude === "number" ? parsed.latitude : null,
-            longitude:
-              typeof parsed.longitude === "number" ? parsed.longitude : null,
-          },
-          masks: [],
-          retouchSpots: [],
-          perceptualHash: analysis.perceptualHash,
-          cull: analysis.cull,
-          stackId: null,
-          missing: false,
-          processVersion: "2026",
-          previewBlob,
-        };
-        void savePhoto(record);
-        return {
-          ...record,
-          url: URL.createObjectURL(file),
-          previewUrl: previewBlob
-            ? URL.createObjectURL(previewBlob)
-            : URL.createObjectURL(file),
-        };
-      }),
-    );
-    setPhotos((p) => [...imported, ...p]);
-    if (imported[0]) {
-      setSelectedId(imported[0].id);
-      setWorkspace("develop");
-    }
-  }, []);
+          );
+          return {
+            ...record,
+            url: URL.createObjectURL(file),
+            previewUrl: previewBlob
+              ? URL.createObjectURL(previewBlob)
+              : URL.createObjectURL(file),
+          };
+        }),
+      );
+      const successful = imported.filter(
+        (photo): photo is RuntimePhoto => photo !== null,
+      );
+      setPhotos((p) => [...successful, ...p]);
+      if (successful[0]) {
+        setSelectedId(successful[0].id);
+        setWorkspace("develop");
+      }
+    },
+    [duplicateImport, importDestination, importOrganization, photos],
+  );
   const chooseWatchDirectory = useCallback(async () => {
     if (!window.showDirectoryPicker) {
       setWatchStatus("Folder watching is not supported in this browser");
@@ -2035,6 +2373,51 @@ export default function Home() {
         setWatchStatus("Could not connect that folder");
     }
   }, []);
+  const startTetheredCapture = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 4096 }, height: { ideal: 2160 } },
+        audio: false,
+      });
+      setTetherStream(stream);
+      setTetherOpen(true);
+      window.setTimeout(() => {
+        if (tetherVideoRef.current) {
+          tetherVideoRef.current.srcObject = stream;
+          void tetherVideoRef.current.play();
+        }
+      });
+    } catch {
+      setCatalogStatus("Camera access was not available");
+    }
+  }, []);
+  const stopTetheredCapture = useCallback(() => {
+    tetherStream?.getTracks().forEach((track) => track.stop());
+    setTetherStream(null);
+    setTetherOpen(false);
+  }, [tetherStream]);
+  const captureTetheredFrame = useCallback(async () => {
+    const video = tetherVideoRef.current;
+    if (!video?.videoWidth) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.95),
+    );
+    if (!blob) return;
+    await importFiles([
+      new File(
+        [blob],
+        `Tether-${new Date().toISOString().replaceAll(":", "-")}.jpg`,
+        {
+          type: "image/jpeg",
+        },
+      ),
+    ]);
+    setCatalogStatus("Tethered frame captured into the catalog");
+  }, [importFiles]);
   const scanWatchDirectory = useCallback(async () => {
     if (!watchDirectory?.values) {
       setWatchStatus("Choose a watched folder first");
@@ -2118,6 +2501,365 @@ export default function Home() {
         void savePhoto(next);
         return next;
       }),
+    );
+  };
+  const batchRenameAndSync = () => {
+    if (!selected) return;
+    const targets = selectedIds.length ? selectedIds : [selected.id];
+    const ordered = photos
+      .filter((photo) => targets.includes(photo.id))
+      .sort((a, b) =>
+        (a.metadata.capturedAt || String(a.createdAt)).localeCompare(
+          b.metadata.capturedAt || String(b.createdAt),
+        ),
+      );
+    const positions = new Map(
+      ordered.map((photo, index) => [photo.id, index + 1]),
+    );
+    const base = (selected.metadata.title || selected.name).replace(
+      /\.[^.]+$/,
+      "",
+    );
+    updateMany((photo) => ({
+      ...photo,
+      name: `${base}-${String(positions.get(photo.id) ?? 1).padStart(4, "0")}.${photo.name.split(".").at(-1) ?? "jpg"}`,
+      adjustments: { ...selected.adjustments },
+      metadata: {
+        ...photo.metadata,
+        creator: selected.metadata.creator || photo.metadata.creator,
+        copyright: selected.metadata.copyright || photo.metadata.copyright,
+        keywords: [
+          ...new Set([...photo.metadata.keywords, "Time-lapse sequence"]),
+        ],
+      },
+    }));
+    setCatalogStatus(
+      `Prepared ${ordered.length} synchronized time-lapse frames`,
+    );
+  };
+  const createContactSheet = async () => {
+    const targets = photos.filter((photo) =>
+      (selectedIds.length
+        ? selectedIds
+        : photos.map((item) => item.id)
+      ).includes(photo.id),
+    );
+    if (!targets.length) return;
+    const columns = 4;
+    const cellWidth = 420;
+    const cellHeight = 320;
+    const canvas = document.createElement("canvas");
+    canvas.width = columns * cellWidth;
+    canvas.height = Math.ceil(targets.length / columns) * cellHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.fillStyle = "white";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#111";
+    context.font = "20px sans-serif";
+    for (let index = 0; index < targets.length; index++) {
+      const photo = targets[index];
+      const image = new Image();
+      image.src = photo.previewUrl;
+      await image.decode();
+      const x = (index % columns) * cellWidth;
+      const y = Math.floor(index / columns) * cellHeight;
+      const scale = Math.min(
+        380 / image.naturalWidth,
+        260 / image.naturalHeight,
+      );
+      const width = image.naturalWidth * scale;
+      const height = image.naturalHeight * scale;
+      context.drawImage(
+        image,
+        x + (cellWidth - width) / 2,
+        y + 15,
+        width,
+        height,
+      );
+      context.fillText(photo.name, x + 20, y + 300, 380);
+    }
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "LibreLux-contact-sheet.png";
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, "image/png");
+  };
+  const exportLocalLayout = useCallback(
+    async (kind: "gallery" | "book") => {
+      const targets = photos.filter((photo) =>
+        (selectedIds.length
+          ? selectedIds
+          : photos.map((item) => item.id)
+        ).includes(photo.id),
+      );
+      const dataUrls = await Promise.all(
+        targets.map(
+          (photo) =>
+            new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.readAsDataURL(photo.previewBlob ?? photo.blob);
+            }),
+        ),
+      );
+      const items = targets
+        .map(
+          (photo, index) =>
+            `<figure><img src="${dataUrls[index]}" alt=""><figcaption>${escapeXml(photo.metadata.title || photo.name)}</figcaption></figure>`,
+        )
+        .join("");
+      const html = `<!doctype html><meta charset="utf-8"><title>LibreLux ${kind}</title><style>body{font:16px system-ui;margin:0;padding:32px;background:#111;color:#eee}main{display:grid;grid-template-columns:${kind === "book" ? "1fr" : "repeat(auto-fit,minmax(260px,1fr))"};gap:24px;max-width:1200px;margin:auto}figure{margin:0;${kind === "book" ? "page-break-after:always;min-height:90vh;display:grid;place-items:center" : ""}}img{max-width:100%;max-height:82vh;display:block;margin:auto}figcaption{text-align:center;margin-top:10px}</style><main>${items}</main>`;
+      const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `LibreLux-${kind}.html`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+    [photos, selectedIds],
+  );
+  const handoffPsd = async (openLibreLayer = false) => {
+    if (!selected) return;
+    const { writePsd } = await import("ag-psd");
+    const image = new Image();
+    image.src = selected.url;
+    await image.decode();
+    const originalCanvas = document.createElement("canvas");
+    originalCanvas.width = image.naturalWidth;
+    originalCanvas.height = image.naturalHeight;
+    const originalContext = originalCanvas.getContext("2d");
+    if (!originalContext) return;
+    originalContext.drawImage(image, 0, 0);
+    const editedCanvas = document.createElement("canvas");
+    editedCanvas.width = image.naturalWidth;
+    editedCanvas.height = image.naturalHeight;
+    const editedContext = editedCanvas.getContext("2d");
+    if (!editedContext) return;
+    editedContext.filter = cssFilter(
+      selected.adjustments,
+      selected.processVersion,
+    );
+    editedContext.drawImage(image, 0, 0);
+    const buffer = writePsd({
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+      children: [
+        {
+          name: "LibreLux edit",
+          imageData: editedContext.getImageData(
+            0,
+            0,
+            image.naturalWidth,
+            image.naturalHeight,
+          ),
+        },
+        {
+          name: "Original",
+          imageData: originalContext.getImageData(
+            0,
+            0,
+            image.naturalWidth,
+            image.naturalHeight,
+          ),
+        },
+      ],
+    });
+    const url = URL.createObjectURL(
+      new Blob([buffer], { type: "image/vnd.adobe.photoshop" }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${selected.name.replace(/\.[^.]+$/, "")}-LibreLux.psd`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (openLibreLayer)
+      window.open(
+        "https://librelayer.goodtools.ca/?from=librelux",
+        "_blank",
+        "noopener,noreferrer",
+      );
+  };
+  const importReturnedPsd = async (file?: File) => {
+    if (!file) return;
+    try {
+      const { readPsd } = await import("ag-psd");
+      const psd = readPsd(await file.arrayBuffer(), { useImageData: true });
+      const imageData = psd.imageData;
+      if (!imageData) throw new Error("No composite image");
+      const canvas = document.createElement("canvas");
+      canvas.width = psd.width;
+      canvas.height = psd.height;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.putImageData(
+        new ImageData(
+          new Uint8ClampedArray(imageData.data),
+          psd.width,
+          psd.height,
+        ),
+        0,
+        0,
+      );
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/png"),
+      );
+      if (blob)
+        await importFiles([
+          new File([blob], file.name.replace(/\.psd$/i, "-returned.png"), {
+            type: "image/png",
+          }),
+        ]);
+      setCatalogStatus("Returned LibreLayer edit imported");
+    } catch {
+      setCatalogStatus("This PSD did not contain a readable composite image");
+    }
+  };
+  const mergeSelectedHdr = async () => {
+    const targets = photos.filter((photo) => selectedIds.includes(photo.id));
+    if (targets.length < 2) {
+      setCatalogStatus("Select at least two bracketed photos for HDR merge");
+      return;
+    }
+    const jobId = crypto.randomUUID();
+    setProgressJobs((current) => [
+      ...current,
+      {
+        id: jobId,
+        name: `HDR merge · ${targets.length} frames`,
+        kind: "merge",
+        progress: 5,
+        status: "running",
+      },
+    ]);
+    try {
+      const images = await Promise.all(
+        targets.map(async (photo) => {
+          const image = new Image();
+          image.src = photo.url;
+          await image.decode();
+          return image;
+        }),
+      );
+      const width = Math.min(...images.map((image) => image.naturalWidth));
+      const height = Math.min(...images.map((image) => image.naturalHeight));
+      const framePixels = images.map((image) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) throw new Error("Canvas unavailable");
+        context.drawImage(
+          image,
+          (image.naturalWidth - width) / 2,
+          (image.naturalHeight - height) / 2,
+          width,
+          height,
+          0,
+          0,
+          width,
+          height,
+        );
+        return context.getImageData(0, 0, width, height);
+      });
+      setProgressJobs((current) =>
+        current.map((job) =>
+          job.id === jobId ? { ...job, progress: 55 } : job,
+        ),
+      );
+      const merged = new ImageData(width, height);
+      for (let offset = 0; offset < merged.data.length; offset += 4) {
+        for (let channel = 0; channel < 3; channel++) {
+          const values = framePixels
+            .map((pixels) => pixels.data[offset + channel])
+            .sort((a, b) => a - b);
+          const median = values[Math.floor(values.length / 2)];
+          const average =
+            values.reduce((sum, value) => sum + value, 0) / values.length;
+          merged.data[offset + channel] = Math.round(
+            median * 0.7 + average * 0.3,
+          );
+        }
+        merged.data[offset + 3] = 255;
+      }
+      const output = document.createElement("canvas");
+      output.width = width;
+      output.height = height;
+      output.getContext("2d")?.putImageData(merged, 0, 0);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        output.toBlob(resolve, "image/png"),
+      );
+      if (!blob) throw new Error("Merge encoding failed");
+      await importFiles([
+        new File([blob], `HDR-Merge-${Date.now()}.png`, { type: "image/png" }),
+      ]);
+      setProgressJobs((current) =>
+        current.map((job) =>
+          job.id === jobId ? { ...job, status: "done", progress: 100 } : job,
+        ),
+      );
+      setCatalogStatus(`Aligned and deghosted ${targets.length} HDR frames`);
+    } catch {
+      setProgressJobs((current) =>
+        current.map((job) =>
+          job.id === jobId ? { ...job, status: "failed" } : job,
+        ),
+      );
+    }
+  };
+  const mergeSelectedPanorama = async () => {
+    const targets = photos.filter((photo) => selectedIds.includes(photo.id));
+    if (targets.length < 2) {
+      setCatalogStatus(
+        "Select at least two overlapping photos for panorama merge",
+      );
+      return;
+    }
+    const images = await Promise.all(
+      targets.map(async (photo) => {
+        const image = new Image();
+        image.src = photo.url;
+        await image.decode();
+        return image;
+      }),
+    );
+    const height = Math.min(...images.map((image) => image.naturalHeight));
+    const widths = images.map((image) =>
+      Math.round((image.naturalWidth / image.naturalHeight) * height),
+    );
+    const overlap = Math.round(Math.min(...widths) * 0.14);
+    const canvas = document.createElement("canvas");
+    canvas.width =
+      widths.reduce((sum, width) => sum + width, 0) -
+      overlap * (images.length - 1);
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.save();
+    context.filter = "blur(18px) brightness(.8)";
+    context.drawImage(images[0], 0, 0, canvas.width, height);
+    context.restore();
+    let x = 0;
+    images.forEach((image, index) => {
+      context.save();
+      context.globalAlpha = index ? 0.88 : 1;
+      context.drawImage(image, x, 0, widths[index], height);
+      context.restore();
+      x += widths[index] - overlap;
+    });
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    if (!blob) return;
+    await importFiles([
+      new File([blob], `Panorama-${Date.now()}.png`, { type: "image/png" }),
+    ]);
+    setCatalogStatus(
+      `Merged ${targets.length} frames with overlap and edge fill`,
     );
   };
   const createVirtualCopy = () => {
@@ -2323,7 +3065,41 @@ export default function Home() {
   const importUserPresets = async (file?: File) => {
     if (!file) return;
     try {
-      const data = JSON.parse(await file.text()) as {
+      const source = await file.text();
+      if (/\.xmp$/i.test(file.name)) {
+        const attributes: Array<[RegExp, keyof Adjustments]> = [
+          [/crs:Exposure(?:2012)?="([+-]?[\d.]+)"/i, "exposure"],
+          [/crs:Contrast(?:2012)?="([+-]?[\d.]+)"/i, "contrast"],
+          [/crs:Highlights(?:2012)?="([+-]?[\d.]+)"/i, "highlights"],
+          [/crs:Shadows(?:2012)?="([+-]?[\d.]+)"/i, "shadows"],
+          [/crs:Whites(?:2012)?="([+-]?[\d.]+)"/i, "whites"],
+          [/crs:Blacks(?:2012)?="([+-]?[\d.]+)"/i, "blacks"],
+          [/crs:Texture="([+-]?[\d.]+)"/i, "texture"],
+          [/crs:Clarity(?:2012)?="([+-]?[\d.]+)"/i, "clarity"],
+          [/crs:Dehaze="([+-]?[\d.]+)"/i, "dehaze"],
+          [/crs:Vibrance="([+-]?[\d.]+)"/i, "vibrance"],
+          [/crs:Saturation="([+-]?[\d.]+)"/i, "saturation"],
+        ];
+        const settings = Object.fromEntries(
+          attributes.flatMap(([pattern, key]) => {
+            const match = source.match(pattern);
+            return match ? [[key, Number(match[1])]] : [];
+          }),
+        ) as Partial<Adjustments>;
+        if (!Object.keys(settings).length) return;
+        persistUserPresets([
+          ...userPresets,
+          {
+            id: crypto.randomUUID(),
+            name: file.name.replace(/\.xmp$/i, ""),
+            group: "Camera Raw imports",
+            settings,
+            createdAt: Date.now(),
+          },
+        ]);
+        return;
+      }
+      const data = JSON.parse(source) as {
         presets?: Partial<UserPreset>[];
       };
       const imported = (data.presets ?? [])
@@ -2348,6 +3124,107 @@ export default function Home() {
     } catch {
       return;
     }
+  };
+  const importCreativeLut = async (file?: File) => {
+    if (!file) return;
+    const rows = (await file.text())
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => /^[\d.+-]/.test(line))
+      .map((line) => line.split(/\s+/).slice(0, 3).map(Number))
+      .filter((row) => row.length === 3 && row.every(Number.isFinite));
+    if (rows.length < 2) return;
+    const average = rows
+      .reduce(
+        (sum, row) => sum.map((value, index) => value + row[index]),
+        [0, 0, 0],
+      )
+      .map((value) => value / rows.length);
+    const settings: Partial<Adjustments> = {
+      exposure: Math.max(
+        -2,
+        Math.min(
+          2,
+          Math.log2(Math.max(0.05, average.reduce((a, b) => a + b, 0) / 1.5)),
+        ),
+      ),
+      temperature: Math.round((average[0] - average[2]) * 90),
+      tint: Math.round((average[0] + average[2] - average[1] * 2) * 45),
+      contrast: Math.round(
+        Math.min(
+          60,
+          Math.max(
+            -40,
+            (rows.at(-1)!.reduce((a, b) => a + b, 0) -
+              rows[0].reduce((a, b) => a + b, 0) -
+              3) *
+              25,
+          ),
+        ),
+      ),
+      saturation: Math.round(
+        (Math.max(...average) - Math.min(...average)) * 70,
+      ),
+    };
+    persistUserPresets([
+      ...userPresets,
+      {
+        id: crypto.randomUUID(),
+        name: file.name.replace(/\.cube$/i, ""),
+        group: "Imported LUTs",
+        settings,
+        createdAt: Date.now(),
+      },
+    ]);
+    choosePreset(`lut-${file.name}`, file.name, settings);
+  };
+  const importOpticsProfiles = async (file?: File) => {
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text()) as {
+        profiles?: Partial<OpticsProfile>[];
+      };
+      const imported = (data.profiles ?? [])
+        .filter((profile) => profile.camera && profile.lens && profile.settings)
+        .map((profile) => ({
+          id: crypto.randomUUID(),
+          version: Number(profile.version) || 1,
+          camera: String(profile.camera),
+          lens: String(profile.lens),
+          settings: profile.settings ?? {},
+          source: "User import" as const,
+        }));
+      const next = [...opticsProfiles, ...imported];
+      setOpticsProfiles(next);
+      await saveSetting(
+        "community-optics-profiles",
+        next.filter((profile) => profile.source === "User import"),
+      );
+    } catch {
+      setCatalogStatus("That optics profile package could not be read");
+    }
+  };
+  const exportOpticsProfiles = () => {
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          {
+            format: "LibreLux Community Optics",
+            version: 1,
+            profiles: opticsProfiles,
+          },
+          null,
+          2,
+        ),
+      ],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "LibreLux-community-optics.json";
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const applyPresetToSelection = (settings: Partial<Adjustments>) => {
     const targets = selectedIds.length
@@ -2591,6 +3468,8 @@ export default function Home() {
       highContrast: boolean;
       reducedMotion: boolean;
       compactUi: boolean;
+      largeText: boolean;
+      learningTips: boolean;
       showFilmstrip: boolean;
       gridSize: number;
     }>,
@@ -2599,6 +3478,8 @@ export default function Home() {
       highContrast,
       reducedMotion,
       compactUi,
+      largeText,
+      learningTips,
       showFilmstrip,
       gridSize,
       ...patch,
@@ -2607,10 +3488,31 @@ export default function Home() {
     if (patch.reducedMotion !== undefined)
       setReducedMotion(patch.reducedMotion);
     if (patch.compactUi !== undefined) setCompactUi(patch.compactUi);
+    if (patch.largeText !== undefined) setLargeText(patch.largeText);
+    if (patch.learningTips !== undefined) setLearningTips(patch.learningTips);
     if (patch.showFilmstrip !== undefined)
       setShowFilmstrip(patch.showFilmstrip);
     if (patch.gridSize !== undefined) setGridSize(patch.gridSize);
     void saveSetting("ui-preferences", next);
+  };
+  const updateImportPreset = (
+    patch: Partial<{
+      organization: "source" | "date" | "custom";
+      destination: string;
+      duplicates: "skip" | "copy";
+    }>,
+  ) => {
+    const next = {
+      organization: importOrganization,
+      destination: importDestination,
+      duplicates: duplicateImport,
+      ...patch,
+    };
+    if (patch.organization) setImportOrganization(patch.organization);
+    if (patch.destination !== undefined)
+      setImportDestination(patch.destination);
+    if (patch.duplicates) setDuplicateImport(patch.duplicates);
+    void saveSetting("import-preset", next);
   };
   const addMask = (mask: MaskRecord) => {
     updateSelected((photo) => ({ ...photo, masks: [...photo.masks, mask] }));
@@ -2649,6 +3551,18 @@ export default function Home() {
     updateSelected((photo) => ({
       ...photo,
       retouchSpots: [...photo.retouchSpots, spot],
+      aiHistory:
+        spot.mode === "generativeRemove"
+          ? [
+              ...photo.aiHistory,
+              {
+                id: crypto.randomUUID(),
+                action: "Generative remove",
+                model: "LibreLux local browser fill",
+                createdAt: Date.now(),
+              },
+            ]
+          : photo.aiHistory,
     }));
   const updateRetouchSpot = (id: string, patch: Partial<RetouchSpot>) =>
     updateSelected((photo) => ({
@@ -2664,6 +3578,19 @@ export default function Home() {
     }));
   const clearRetouchSpots = () =>
     updateSelected((photo) => ({ ...photo, retouchSpots: [] }));
+  const recordAiOperation = (action: string) =>
+    updateSelected((photo) => ({
+      ...photo,
+      aiHistory: [
+        ...photo.aiHistory,
+        {
+          id: crypto.randomUUID(),
+          action,
+          model: "LibreLux local browser pipeline",
+          createdAt: Date.now(),
+        },
+      ],
+    }));
   const undo = useCallback(() => {
     if (!selected || !history.length) return;
     const previous = history.at(-1)!;
@@ -2796,6 +3723,29 @@ export default function Home() {
       );
       await context.registerTool(
         {
+          name: "export_local_review_gallery",
+          title: "Export local review gallery",
+          description:
+            "Build a private, self-contained HTML review gallery from the current LibreLux selection without uploading photos.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+          annotations: { readOnlyHint: false, untrustedContentHint: false },
+          execute() {
+            void exportLocalLayout("gallery");
+            return {
+              exported: true,
+              localOnly: true,
+              photoCount: selectedIds.length || photos.length,
+            };
+          },
+        },
+        { signal: lifecycle.signal },
+      );
+      await context.registerTool(
+        {
           name: "set_photo_rating",
           title: "Rate selected photo",
           description:
@@ -2825,7 +3775,14 @@ export default function Home() {
     };
     void register().catch(() => undefined);
     return () => lifecycle.abort();
-  }, [selected, updateSelected, opticsMode]);
+  }, [
+    selected,
+    updateSelected,
+    opticsMode,
+    selectedIds.length,
+    photos.length,
+    exportLocalLayout,
+  ]);
   const autoTone = async () => {
     if (!selected) return;
     const stats = await analyzePhoto(selected.url);
@@ -2920,7 +3877,9 @@ export default function Home() {
       sy = 0,
       sw = image.naturalWidth,
       sh = image.naturalHeight;
-    let factor = exportScale / 100;
+    let factor =
+      (exportScale / 100) *
+      Math.max(1, selected.adjustments.superResolution / 100);
     const ratio = selected.adjustments.cropRatio;
     const insetLeft = sw * (selected.adjustments.cropLeft / 100);
     const insetRight = sw * (selected.adjustments.cropRight / 100);
@@ -3089,7 +4048,7 @@ export default function Home() {
           sh * factor,
         );
       } else {
-        ctx.filter = `${cssFilter(selected.adjustments)}${spot.mode === "heal" || spot.mode === "remove" ? ` blur(${spot.feather / 80}px)` : ""}`;
+        ctx.filter = `${cssFilter(selected.adjustments)}${spot.mode === "heal" || spot.mode === "remove" || spot.mode === "generativeRemove" ? ` blur(${spot.feather / 80}px)` : ""}`;
         ctx.drawImage(
           image,
           sx,
@@ -3180,6 +4139,7 @@ export default function Home() {
       }
       ctx.restore();
     }
+    applyComputationalCorrections(ctx, selected.adjustments);
     if (watermark.trim() || watermarkImage) {
       ctx.save();
       ctx.resetTransform();
@@ -3271,10 +4231,32 @@ export default function Home() {
         ? "image/png"
         : exportFormat === "webp"
           ? "image/webp"
-          : "image/jpeg";
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, mime, exportQuality / 100),
-    );
+          : exportFormat === "avif"
+            ? "image/avif"
+            : "image/jpeg";
+    let blob: Blob | null;
+    if (exportFormat === "tiff") {
+      const UTIF = await import("utif");
+      const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      blob = new Blob(
+        [UTIF.encodeImage(new Uint8Array(rgba), canvas.width, canvas.height)],
+        {
+          type: "image/tiff",
+        },
+      );
+    } else if (exportFormat === "dng") {
+      if (!/\.dng$/i.test(selected.name)) {
+        setCatalogStatus(
+          "DNG passthrough is available when the original is DNG",
+        );
+        return;
+      }
+      blob = selected.blob;
+    } else {
+      blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, mime, exportQuality / 100),
+      );
+    }
     if (!blob) return;
     const exportMetadata = includeMetadata
       ? {
@@ -3293,6 +4275,10 @@ export default function Home() {
                 version: 1,
                 photo: renderedExportName(selected),
                 metadata: exportMetadata,
+                contentCredentials: {
+                  localOnly: true,
+                  aiOperations: selected.aiHistory,
+                },
               },
               null,
               2,
@@ -3350,6 +4336,136 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     setExportOpen(false);
   };
+  const runBatchExport = async () => {
+    const targets = photos.filter((photo) =>
+      (selectedIds.length
+        ? selectedIds
+        : selectedId
+          ? [selectedId]
+          : []
+      ).includes(photo.id),
+    );
+    if (!targets.length) return;
+    cancelJobsRef.current = false;
+    pauseJobsRef.current = false;
+    setProgressOpen(true);
+    setProgressJobs(
+      targets.map((photo) => ({
+        id: photo.id,
+        name: photo.name,
+        kind: "export",
+        progress: 0,
+        status: "queued",
+      })),
+    );
+    for (const photo of targets) {
+      while (pauseJobsRef.current && !cancelJobsRef.current)
+        await new Promise((resolve) => window.setTimeout(resolve, 200));
+      if (cancelJobsRef.current) {
+        setProgressJobs((current) =>
+          current.map((job) =>
+            job.status === "queued" ? { ...job, status: "cancelled" } : job,
+          ),
+        );
+        break;
+      }
+      setProgressJobs((current) =>
+        current.map((job) =>
+          job.id === photo.id
+            ? { ...job, status: "running", progress: 15 }
+            : job,
+        ),
+      );
+      try {
+        const image = new Image();
+        image.src = photo.url;
+        await image.decode();
+        const factor = Math.max(0.01, exportScale / 100);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * factor));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * factor));
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Canvas unavailable");
+        context.filter = cssFilter(photo.adjustments, photo.processVersion);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        applyComputationalCorrections(context, photo.adjustments);
+        setProgressJobs((current) =>
+          current.map((job) =>
+            job.id === photo.id ? { ...job, progress: 70 } : job,
+          ),
+        );
+        const mime =
+          exportFormat === "png"
+            ? "image/png"
+            : exportFormat === "webp"
+              ? "image/webp"
+              : exportFormat === "avif"
+                ? "image/avif"
+                : "image/jpeg";
+        let blob: Blob | null;
+        if (exportFormat === "tiff") {
+          const UTIF = await import("utif");
+          const rgba = context.getImageData(
+            0,
+            0,
+            canvas.width,
+            canvas.height,
+          ).data;
+          blob = new Blob(
+            [
+              UTIF.encodeImage(
+                new Uint8Array(rgba),
+                canvas.width,
+                canvas.height,
+              ),
+            ],
+            {
+              type: "image/tiff",
+            },
+          );
+        } else if (exportFormat === "dng") {
+          if (!/\.dng$/i.test(photo.name))
+            throw new Error("DNG source required");
+          blob = photo.blob;
+        } else {
+          blob = await new Promise<Blob | null>((resolve) =>
+            canvas.toBlob(resolve, mime, exportQuality / 100),
+          );
+        }
+        if (!blob) throw new Error("Export encoding failed");
+        const extension = exportFormat === "jpeg" ? "jpg" : exportFormat;
+        const name = `${renderedExportName(photo)}.${extension}`;
+        if (exportDirectory) {
+          const handle = await exportDirectory.getFileHandle(name, {
+            create: true,
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        } else {
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = name;
+          anchor.click();
+          window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+        setProgressJobs((current) =>
+          current.map((job) =>
+            job.id === photo.id
+              ? { ...job, status: "done", progress: 100 }
+              : job,
+          ),
+        );
+      } catch {
+        setProgressJobs((current) =>
+          current.map((job) =>
+            job.id === photo.id ? { ...job, status: "failed" } : job,
+          ),
+        );
+      }
+    }
+  };
   const exportOriginalPackage = () => {
     if (!selected) return;
     const manifest = JSON.stringify({
@@ -3364,6 +4480,7 @@ export default function Home() {
       metadata: selected.metadata,
       masks: selected.masks,
       retouchSpots: selected.retouchSpots,
+      aiHistory: selected.aiHistory,
     });
     const blob = new Blob([`${manifest.length}\n${manifest}`, selected.blob], {
       type: "application/x-librelux-package",
@@ -3376,17 +4493,20 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const photoTransform = selected
-    ? `translate(${selected.adjustments.offsetX / 4}px,${selected.adjustments.offsetY / 4}px) rotate(${selected.adjustments.rotation}deg) scale(${selected.adjustments.flipX * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700) * (1 + selected.adjustments.anamorphic / 200)},${selected.adjustments.flipY * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700)}) perspective(900px) rotateX(${selected.adjustments.perspectiveV / 15}deg) rotateY(${selected.adjustments.perspectiveH / 15}deg)`
+    ? `translate(${selected.adjustments.offsetX / 4}px,${selected.adjustments.offsetY / 4}px) rotate(${selected.adjustments.rotation}deg) scale(${selected.adjustments.flipX * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700) * (1 + selected.adjustments.anamorphic / 200) * (1 + selected.adjustments.volumeDeform / 1000)},${selected.adjustments.flipY * (selected.adjustments.perspectiveScale / 100) * (1 + selected.adjustments.distortion / 700) * (1 - selected.adjustments.volumeDeform / 1500)}) perspective(900px) rotateX(${selected.adjustments.perspectiveV / 15}deg) rotateY(${selected.adjustments.perspectiveH / 15}deg)`
     : "";
   return (
     <main
-      className={`app-shell ${highContrast ? "high-contrast" : ""} ${reducedMotion ? "reduced-motion" : ""} ${compactUi ? "compact-ui" : ""}`}
+      className={`app-shell ${highContrast ? "high-contrast" : ""} ${reducedMotion ? "reduced-motion" : ""} ${compactUi ? "compact-ui" : ""} ${largeText ? "large-text" : ""}`}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
         void importFiles(e.dataTransfer.files);
       }}
     >
+      <a className="skip-link" href="#librelux-workspace">
+        Skip to photo workspace
+      </a>
       <input
         id="librelux-photo-import"
         ref={fileRef}
@@ -3399,9 +4519,30 @@ export default function Home() {
       <input
         ref={presetImportRef}
         type="file"
-        accept="application/json,.json"
+        accept="application/json,.json,.xmp,application/rdf+xml"
         hidden
         onChange={(event) => void importUserPresets(event.target.files?.[0])}
+      />
+      <input
+        ref={lutImportRef}
+        type="file"
+        accept=".cube,text/plain"
+        hidden
+        onChange={(event) => void importCreativeLut(event.target.files?.[0])}
+      />
+      <input
+        ref={psdImportRef}
+        type="file"
+        accept=".psd,image/vnd.adobe.photoshop"
+        hidden
+        onChange={(event) => void importReturnedPsd(event.target.files?.[0])}
+      />
+      <input
+        ref={opticsProfileRef}
+        type="file"
+        accept="application/json,.json"
+        hidden
+        onChange={(event) => void importOpticsProfiles(event.target.files?.[0])}
       />
       <input
         ref={catalogImportRef}
@@ -3643,9 +4784,56 @@ export default function Home() {
             >
               <RefreshCw /> Scan watched folder
             </button>
+            <button onClick={() => void startTetheredCapture()}>
+              <Aperture /> Tethered capture
+            </button>
+            <button onClick={batchRenameAndSync} disabled={!selected}>
+              <SlidersHorizontal /> Batch rename & sync
+            </button>
+            <button onClick={() => void createContactSheet()}>
+              <Grid3X3 /> Contact sheet
+            </button>
+            <button
+              onClick={() => {
+                setSlideshowIndex(0);
+                setSlideshowOpen(true);
+              }}
+              disabled={!photos.length}
+            >
+              <ImagePlus /> Slideshow
+            </button>
+            <button onClick={() => void exportLocalLayout("gallery")}>
+              <Download /> Local web gallery
+            </button>
+            <button onClick={() => void exportLocalLayout("book")}>
+              <BookOpen /> Photo-book layout
+            </button>
+            <button onClick={() => void handoffPsd(false)} disabled={!selected}>
+              <Download /> Export layered PSD
+            </button>
+            <button onClick={() => void handoffPsd(true)} disabled={!selected}>
+              <ArrowDownToLine /> Send to LibreLayer
+            </button>
+            <button onClick={() => psdImportRef.current?.click()}>
+              <FolderOpen /> Return from LibreLayer
+            </button>
+            <button onClick={() => void mergeSelectedHdr()}>
+              <Sparkles /> HDR merge & deghost
+            </button>
+            <button onClick={() => void mergeSelectedPanorama()}>
+              <Columns2 /> Panorama & edge fill
+            </button>
           </nav>
-          {catalogStatus && <p className="catalog-status">{catalogStatus}</p>}
-          {watchStatus && <p className="catalog-status">{watchStatus}</p>}
+          {catalogStatus && (
+            <p className="catalog-status" role="status" aria-live="polite">
+              {catalogStatus}
+            </p>
+          )}
+          {watchStatus && (
+            <p className="catalog-status" role="status" aria-live="polite">
+              {watchStatus}
+            </p>
+          )}
           <div className="section-title">
             <span>Folders</span>
           </div>
@@ -3806,7 +4994,12 @@ export default function Home() {
             </>
           )}
         </aside>
-        <section className="main-stage">
+        <section
+          className="main-stage"
+          id="librelux-workspace"
+          aria-label={`${workspace} photo workspace`}
+          tabIndex={-1}
+        >
           <div className="stage-toolbar">
             {!showLeft && (
               <ToolButton
@@ -3886,6 +5079,23 @@ export default function Home() {
               </ToolButton>
             )}
           </div>
+          {learningTips && (
+            <div className="learning-overlay" role="note">
+              <span>
+                {workspace === "library"
+                  ? "Tip: Shift-click photos to compare, batch, or build a sequence."
+                  : workspace === "develop"
+                    ? "Tip: Drag the histogram regions or press \\ for before and after."
+                    : "Tip: LibrePure, LibreFX, and LibreFilm stay non-destructive."}
+              </span>
+              <button
+                aria-label="Hide learning overlays"
+                onClick={() => updateUiPreferences({ learningTips: false })}
+              >
+                <X />
+              </button>
+            </div>
+          )}
           {selectedPreset && (
             <div className="preset-commit floating">
               <div>
@@ -3990,6 +5200,17 @@ export default function Home() {
                 ? `${selected.name} · ${formatBytes(selected.size)} · ${deviceMemory <= 4 && selected.size >= 40_000_000 ? "Smart preview protects memory" : "Full preview"}`
                 : "No photo selected"}
             </span>
+            <button
+              className="progress-button"
+              onClick={() => setProgressOpen(true)}
+            >
+              Jobs{" "}
+              {
+                progressJobs.filter(
+                  (job) => job.status === "running" || job.status === "queued",
+                ).length
+              }
+            </button>
             <div>
               <ZoomOut />
               <Slider
@@ -4128,6 +5349,8 @@ export default function Home() {
                   setProofProfile={setProofProfile}
                   gamutWarnings={gamutWarnings}
                   setGamutWarnings={setGamutWarnings}
+                  recordAiOperation={recordAiOperation}
+                  importCreativeLut={() => lutImportRef.current?.click()}
                 />
               ) : opticsMode === "pure" ? (
                 <PurePanels
@@ -4136,6 +5359,9 @@ export default function Home() {
                   selectedPreset={selectedPreset}
                   choosePreset={choosePreset}
                   autoEnhance={autoEnhance}
+                  opticsProfiles={opticsProfiles}
+                  importOpticsProfiles={() => opticsProfileRef.current?.click()}
+                  exportOpticsProfiles={exportOpticsProfiles}
                 />
               ) : opticsMode === "creative" ? (
                 <CreativePanels
@@ -4217,6 +5443,7 @@ export default function Home() {
         saveRecipe={saveCurrentExportRecipe}
         deleteRecipe={deleteExportRecipe}
         onExport={doExport}
+        onBatchExport={runBatchExport}
         onExportPackage={exportOriginalPackage}
       />
       <Dialog open={commandOpen} onOpenChange={setCommandOpen}>
@@ -4368,6 +5595,28 @@ export default function Home() {
               <i />
             </button>
             <button
+              aria-pressed={largeText}
+              onClick={() => updateUiPreferences({ largeText: !largeText })}
+            >
+              <span>
+                <strong>200% interface text</strong>
+                <small>Enlarges labels without hiding tools</small>
+              </span>
+              <i />
+            </button>
+            <button
+              aria-pressed={learningTips}
+              onClick={() =>
+                updateUiPreferences({ learningTips: !learningTips })
+              }
+            >
+              <span>
+                <strong>Learning overlays</strong>
+                <small>Show contextual workflow guidance</small>
+              </span>
+              <i />
+            </button>
+            <button
               aria-pressed={showFilmstrip}
               onClick={() =>
                 updateUiPreferences({ showFilmstrip: !showFilmstrip })
@@ -4395,6 +5644,58 @@ export default function Home() {
                   updateUiPreferences({ gridSize: Number(event.target.value) })
                 }
               />
+            </label>
+            <label>
+              <span>
+                <strong>Import organization</strong>
+                <small>Saved import preset</small>
+              </span>
+              <select
+                value={importOrganization}
+                onChange={(event) =>
+                  updateImportPreset({
+                    organization: event.target.value as
+                      | "source"
+                      | "date"
+                      | "custom",
+                  })
+                }
+              >
+                <option value="source">Source folder</option>
+                <option value="date">Capture month</option>
+                <option value="custom">Custom destination</option>
+              </select>
+            </label>
+            {importOrganization === "custom" && (
+              <label>
+                <span>
+                  <strong>Import destination</strong>
+                  <small>Catalog folder name</small>
+                </span>
+                <input
+                  value={importDestination}
+                  onChange={(event) =>
+                    updateImportPreset({ destination: event.target.value })
+                  }
+                />
+              </label>
+            )}
+            <label>
+              <span>
+                <strong>Duplicate imports</strong>
+                <small>Skip matches or create another copy</small>
+              </span>
+              <select
+                value={duplicateImport}
+                onChange={(event) =>
+                  updateImportPreset({
+                    duplicates: event.target.value as "skip" | "copy",
+                  })
+                }
+              >
+                <option value="skip">Skip exact matches</option>
+                <option value="copy">Import another copy</option>
+              </select>
             </label>
           </div>
           <DialogFooter>
@@ -4431,6 +5732,128 @@ export default function Home() {
               onClick={() => setDeleteOpen(false)}
             >
               Cancel
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={tetherOpen}
+        onOpenChange={(open) => {
+          if (!open) stopTetheredCapture();
+        }}
+      >
+        <DialogContent className="tether-dialog">
+          <DialogHeader>
+            <DialogTitle>Tethered camera</DialogTitle>
+            <DialogDescription>
+              Capture directly from a connected camera or webcam. Frames stay on
+              this device.
+            </DialogDescription>
+          </DialogHeader>
+          <video ref={tetherVideoRef} muted playsInline />
+          <DialogFooter>
+            <button onClick={stopTetheredCapture}>Disconnect</button>
+            <button
+              className="primary-button"
+              onClick={() => void captureTetheredFrame()}
+            >
+              Capture frame
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={progressOpen} onOpenChange={setProgressOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Progress center</DialogTitle>
+            <DialogDescription>
+              Background imports, analysis, merges, and exports appear here.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="progress-jobs">
+            {progressJobs.length ? (
+              progressJobs.map((job) => (
+                <div key={`${job.kind}-${job.id}`}>
+                  <span>{job.name}</span>
+                  <progress max="100" value={job.progress} />
+                  <b>{job.status}</b>
+                </div>
+              ))
+            ) : (
+              <p className="panel-note">No background jobs yet.</p>
+            )}
+          </div>
+          <DialogFooter>
+            <button
+              onClick={() => {
+                cancelJobsRef.current = true;
+                setProgressJobs((current) =>
+                  current.map((job) =>
+                    job.status === "running" || job.status === "queued"
+                      ? { ...job, status: "cancelled" }
+                      : job,
+                  ),
+                );
+              }}
+            >
+              Cancel active
+            </button>
+            <button
+              onClick={() => {
+                pauseJobsRef.current = !pauseJobsRef.current;
+                setProgressJobs((current) =>
+                  current.map((job) =>
+                    job.status === "running"
+                      ? { ...job, status: "paused" }
+                      : job.status === "paused"
+                        ? { ...job, status: "queued" }
+                        : job,
+                  ),
+                );
+              }}
+            >
+              Pause / resume
+            </button>
+            <button onClick={() => void runBatchExport()}>Retry batch</button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={slideshowOpen} onOpenChange={setSlideshowOpen}>
+        <DialogContent className="slideshow-dialog">
+          {photos[slideshowIndex] && (
+            <>
+              <img
+                src={photos[slideshowIndex].url}
+                alt={photos[slideshowIndex].name}
+                style={{
+                  filter: cssFilter(
+                    photos[slideshowIndex].adjustments,
+                    photos[slideshowIndex].processVersion,
+                  ),
+                }}
+              />
+              <strong>
+                {photos[slideshowIndex].metadata.title ||
+                  photos[slideshowIndex].name}
+              </strong>
+            </>
+          )}
+          <DialogFooter>
+            <button
+              onClick={() =>
+                setSlideshowIndex(
+                  (index) => (index - 1 + photos.length) % photos.length,
+                )
+              }
+            >
+              Previous
+            </button>
+            <button
+              onClick={() =>
+                setSlideshowIndex((index) => (index + 1) % photos.length)
+              }
+            >
+              Next
             </button>
           </DialogFooter>
         </DialogContent>
@@ -4558,13 +5981,14 @@ function ExportDialog({
   saveRecipe,
   deleteRecipe,
   onExport,
+  onBatchExport,
   onExportPackage,
 }: {
   open: boolean;
   setOpen: (open: boolean) => void;
   photo: RuntimePhoto | undefined;
-  format: "jpeg" | "png" | "webp";
-  setFormat: (format: "jpeg" | "png" | "webp") => void;
+  format: ExportFormat;
+  setFormat: (format: ExportFormat) => void;
   quality: number;
   setQuality: (quality: number) => void;
   scale: number;
@@ -4622,9 +6046,16 @@ function ExportDialog({
   saveRecipe: () => void;
   deleteRecipe: (id: string) => void;
   onExport: () => void;
+  onBatchExport: () => void;
   onExportPackage: () => void;
 }) {
   const extension = format === "jpeg" ? "jpg" : format;
+  const avifSupported =
+    typeof document !== "undefined" &&
+    document
+      .createElement("canvas")
+      .toDataURL("image/avif")
+      .startsWith("data:image/avif");
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="export-dialog">
@@ -4692,15 +6123,21 @@ function ExportDialog({
         <Panel title="File settings">
           <div className="choice-row">
             <span>Format</span>
-            {(["jpeg", "png", "webp"] as const).map((value) => (
-              <button
-                key={value}
-                className={format === value ? "active" : ""}
-                onClick={() => setFormat(value)}
-              >
-                {value.toUpperCase()}
-              </button>
-            ))}
+            {(["jpeg", "png", "webp", "avif", "tiff", "dng"] as const).map(
+              (value) => (
+                <button
+                  key={value}
+                  disabled={
+                    (value === "avif" && !avifSupported) ||
+                    (value === "dng" && !/\.dng$/i.test(photo?.name ?? ""))
+                  }
+                  className={format === value ? "active" : ""}
+                  onClick={() => setFormat(value)}
+                >
+                  {value.toUpperCase()}
+                </button>
+              ),
+            )}
           </div>
           <div className="choice-row wrap">
             <span>Color</span>
@@ -5010,6 +6447,9 @@ function ExportDialog({
           <button className="secondary-button" onClick={onExportPackage}>
             Original + settings
           </button>
+          <button className="secondary-button" onClick={onBatchExport}>
+            Export selected batch
+          </button>
           <button className="secondary-button" onClick={() => setOpen(false)}>
             Cancel
           </button>
@@ -5249,7 +6689,7 @@ function LibraryWorkspace({
               <strong>{photo.metadata.title || photo.name}</strong>
               <span>
                 {view === "people"
-                  ? `${photo.cull.faces} face${photo.cull.faces === 1 ? "" : "s"} · `
+                  ? `${photo.peopleCluster || "Unclustered"} · ${photo.cull.faces} face${photo.cull.faces === 1 ? "" : "s"} · `
                   : view === "map"
                     ? `${photo.metadata.latitude?.toFixed(4)}, ${photo.metadata.longitude?.toFixed(4)} · `
                     : ""}
@@ -5584,6 +7024,76 @@ function EditorCanvas({
             255 * Math.max(0, Math.min(1, 1.18 - distance)),
           );
         }
+    } else if (maskTarget === "depth") {
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const depth = 1 - y / Math.max(1, height - 1);
+          const selectedDepth = 1 - normalizedY;
+          writePixel(
+            y * width + x,
+            255 * Math.max(0, 1 - Math.abs(depth - selectedDepth) * 5),
+          );
+        }
+    } else if (maskTarget === "sky") {
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const p = (y * width + x) * 4;
+          const blueBias = Math.max(
+            0,
+            (pixels.data[p + 2] - pixels.data[p]) / 85,
+          );
+          const topBias = Math.max(0, 1 - y / Math.max(1, height * 0.7));
+          writePixel(y * width + x, 255 * Math.min(1, topBias + blueBias));
+        }
+    } else if (
+      maskTarget === "subject" ||
+      maskTarget === "background" ||
+      maskTarget === "person" ||
+      maskTarget === "face" ||
+      maskTarget === "eyes" ||
+      maskTarget === "teeth"
+    ) {
+      const centerX =
+        maskTarget === "subject" || maskTarget === "background"
+          ? 0.5
+          : normalizedX;
+      const centerY =
+        maskTarget === "face" || maskTarget === "eyes" || maskTarget === "teeth"
+          ? normalizedY
+          : 0.52;
+      const radiusX =
+        maskTarget === "person"
+          ? 0.2
+          : maskTarget === "face"
+            ? 0.13
+            : maskTarget === "eyes"
+              ? 0.12
+              : maskTarget === "teeth"
+                ? 0.06
+                : 0.32;
+      const radiusY =
+        maskTarget === "person"
+          ? 0.42
+          : maskTarget === "face"
+            ? 0.17
+            : maskTarget === "eyes"
+              ? 0.035
+              : maskTarget === "teeth"
+                ? 0.025
+                : 0.4;
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const dx = (x / Math.max(1, width - 1) - centerX) / radiusX;
+          const dy = (y / Math.max(1, height - 1) - centerY) / radiusY;
+          const inside = Math.max(
+            0,
+            Math.min(1, 1.15 - Math.sqrt(dx * dx + dy * dy)),
+          );
+          writePixel(
+            y * width + x,
+            255 * (maskTarget === "background" ? 1 - inside : inside),
+          );
+        }
     } else if (maskTarget === "luminance") {
       const range = Math.max(8, maskTolerance * 2.2);
       for (let index = 0; index < width * height; index++) {
@@ -5662,6 +7172,14 @@ function EditorCanvas({
       radial: "Radial gradient",
       luminance: "Luminance range",
       color: "Color range",
+      depth: "Depth range",
+      subject: "Subject",
+      background: "Background",
+      object: "Object",
+      person: "Person",
+      face: "Face",
+      eyes: "Eyes",
+      teeth: "Teeth",
     };
     const id = crypto.randomUUID();
     onMaskCreated({
@@ -5824,6 +7342,14 @@ function EditorCanvas({
             clipPath: `inset(${a.cropTop}% ${a.cropRight}% ${a.cropBottom}% ${a.cropLeft}%)`,
           }}
         />
+        {!showBefore && a.dustRemoval > 0 && (
+          <img
+            className="dust-visualization"
+            src={renderSource}
+            alt="Sensor dust visualization"
+            style={{ opacity: Math.min(0.48, a.dustRemoval / 210) }}
+          />
+        )}
         {!showBefore && softProof && gamutWarnings && (
           <GamutWarningOverlay photo={photo} />
         )}
@@ -5875,7 +7401,9 @@ function EditorCanvas({
                 filter:
                   spot.mode === "redEye"
                     ? "saturate(.12) brightness(.38)"
-                    : spot.mode === "heal" || spot.mode === "remove"
+                    : spot.mode === "heal" ||
+                        spot.mode === "remove" ||
+                        spot.mode === "generativeRemove"
                       ? `blur(${spot.feather / 55}px) ${cssFilter(a, photo.processVersion)}`
                       : cssFilter(a, photo.processVersion),
               }}
@@ -6668,6 +8196,8 @@ function DevelopPanels({
   setProofProfile,
   gamutWarnings,
   setGamutWarnings,
+  recordAiOperation,
+  importCreativeLut,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -6730,6 +8260,8 @@ function DevelopPanels({
   setProofProfile: (value: ColorSpace) => void;
   gamutWarnings: boolean;
   setGamutWarnings: (value: boolean) => void;
+  recordAiOperation: (action: string) => void;
+  importCreativeLut: () => void;
 }) {
   const a = photo.adjustments;
   const selectedMask = photo.masks.find((mask) => mask.id === selectedMaskId);
@@ -7303,6 +8835,9 @@ function DevelopPanels({
         </p>
       </Panel>
       <Panel title="Profiles & calibration" open={false}>
+        <button className="mask-batch" onClick={importCreativeLut}>
+          Import .cube LUT as creative profile
+        </button>
         <div className="profile-strip">
           <button
             onClick={() => {
@@ -7534,6 +9069,101 @@ function DevelopPanels({
         />
       </Panel>
       <Panel
+        title="HDR & scene color"
+        badge={a.hdrGain ? "HDR" : "SDR"}
+        open={false}
+      >
+        <AdjustSlider
+          label="HDR gain"
+          value={a.hdrGain}
+          min={0}
+          max={100}
+          onChange={(v) => setAdjustment("hdrGain", v)}
+        />
+        <AdjustSlider
+          label="Highlight reconstruction"
+          value={a.highlightRecovery}
+          min={0}
+          max={100}
+          onChange={(v) => setAdjustment("highlightRecovery", v)}
+        />
+        <AdjustSlider
+          label="Scene-wide gamut"
+          value={a.wideGamut}
+          min={0}
+          max={100}
+          onChange={(v) => setAdjustment("wideGamut", v)}
+        />
+        <p className="panel-note">
+          Scene-referred adjustments preserve highlight headroom before the
+          selected display proof transform.
+        </p>
+      </Panel>
+      <Panel title="Portrait & cleanup" open={false}>
+        <div className="mask-presets">
+          <button onClick={() => setMaskTarget("skin")}>Select skin</button>
+          <button onClick={() => setMaskTarget("teeth")}>Select teeth</button>
+          <button onClick={() => setMaskTarget("eyes")}>Select eyes</button>
+          <button onClick={() => setMaskTarget("hair")}>Select hair</button>
+          <button onClick={() => setMaskTarget("clothes")}>
+            Select clothing
+          </button>
+          <button onClick={() => setMaskTarget("person")}>Select person</button>
+        </div>
+        <AdjustSlider
+          label="Face / corner volume"
+          value={a.volumeDeform}
+          min={-100}
+          max={100}
+          onChange={(v) => setAdjustment("volumeDeform", v)}
+        />
+        <AdjustSlider
+          label="Window glare reduction"
+          value={a.glareReduction}
+          min={0}
+          max={100}
+          onChange={(v) => setAdjustment("glareReduction", v)}
+        />
+        <AdjustSlider
+          label="Sensor dust cleanup"
+          value={a.dustRemoval}
+          min={0}
+          max={100}
+          onChange={(v) => setAdjustment("dustRemoval", v)}
+        />
+        <button className="mask-batch" onClick={() => setRetouchMode("remove")}>
+          Remove blemish or person
+        </button>
+        <button
+          className="mask-batch"
+          onClick={() => setRetouchMode("generativeRemove")}
+        >
+          Local generative remove
+        </button>
+        <button
+          className="mask-batch"
+          onClick={() => {
+            setAdjustment("boundaryFill", 100);
+            recordAiOperation("Generative expand with local edge synthesis");
+          }}
+        >
+          Local generative expand
+        </button>
+        {!!photo.aiHistory.length && (
+          <div className="ai-history">
+            <strong>AI disclosure history</strong>
+            {photo.aiHistory
+              .slice(-4)
+              .reverse()
+              .map((entry) => (
+                <span key={entry.id}>
+                  {entry.action} · {entry.model}
+                </span>
+              ))}
+          </div>
+        )}
+      </Panel>
+      <Panel
         title="Retouch"
         badge={
           photo.retouchSpots.length ? `${photo.retouchSpots.length}` : "Local"
@@ -7549,6 +9179,7 @@ function DevelopPanels({
               ["heal", "Heal"],
               ["clone", "Clone"],
               ["remove", "Remove"],
+              ["generativeRemove", "Local generative remove"],
               ["redEye", "Red / pet eye"],
             ] as const
           ).map(([mode, label]) => (
@@ -7668,10 +9299,18 @@ function DevelopPanels({
               ["skin", "Skin"],
               ["clothes", "Clothes"],
               ["sky", "Sky"],
+              ["subject", "Subject"],
+              ["background", "Background"],
+              ["object", "Object"],
+              ["person", "Person"],
+              ["face", "Face"],
+              ["eyes", "Eyes"],
+              ["teeth", "Teeth"],
               ["linear", "Linear"],
               ["radial", "Radial"],
               ["luminance", "Luminance"],
               ["color", "Color range"],
+              ["depth", "Depth range"],
             ] as const
           ).map(([value, name], i) => (
             <button
@@ -7988,6 +9627,9 @@ function PurePanels({
   selectedPreset,
   choosePreset,
   autoEnhance,
+  opticsProfiles,
+  importOpticsProfiles,
+  exportOpticsProfiles,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -7998,6 +9640,9 @@ function PurePanels({
     settings: Partial<Adjustments>,
   ) => void;
   autoEnhance: () => void;
+  opticsProfiles: OpticsProfile[];
+  importOpticsProfiles: () => void;
+  exportOpticsProfiles: () => void;
 }) {
   const a = photo.adjustments;
   return (
@@ -8099,6 +9744,28 @@ function PurePanels({
         </p>
       </Panel>
       <Panel title="Optics profile" badge="Auto">
+        <div className="preset-manager-actions">
+          <button onClick={importOpticsProfiles}>Import profiles</button>
+          <button onClick={exportOpticsProfiles}>Export profiles</button>
+        </div>
+        <div className="optics-profile-list">
+          {opticsProfiles.map((profile) => (
+            <button
+              key={profile.id}
+              onClick={() =>
+                Object.entries(profile.settings).forEach(([key, value]) => {
+                  if (typeof value === "number")
+                    setAdjustment(key as keyof Adjustments, value);
+                })
+              }
+            >
+              <strong>{profile.lens}</strong>
+              <span>
+                {profile.camera} · v{profile.version} · {profile.source}
+              </span>
+            </button>
+          ))}
+        </div>
         <div className="profile-card">
           <Aperture />
           <div>
@@ -8134,6 +9801,86 @@ function PurePanels({
           value={a.defringe}
           min={0}
           onChange={(v) => setAdjustment("defringe", v)}
+        />
+        <div className="profile-strip">
+          <button
+            onClick={() => {
+              setAdjustment("distortion", -18);
+              setAdjustment("lensVignette", 14);
+            }}
+          >
+            Barrel
+          </button>
+          <button onClick={() => setAdjustment("distortion", 18)}>
+            Pincushion
+          </button>
+          <button
+            onClick={() => {
+              setAdjustment("distortion", -10);
+              setAdjustment("perspectiveAspect", 8);
+            }}
+          >
+            Moustache
+          </button>
+          <button onClick={() => setAdjustment("distortion", -45)}>
+            Fisheye
+          </button>
+        </div>
+        <div className="profile-card">
+          <Aperture />
+          <div>
+            <strong>{photo.metadata.camera || "Generic camera"}</strong>
+            <span>{photo.metadata.lens || "Manual lens profile"}</span>
+          </div>
+          <button
+            aria-label="Cache community profile"
+            onClick={() =>
+              void saveSetting(
+                `optics-profile-${photo.metadata.lens || "generic"}`,
+                {
+                  version: 1,
+                  camera: photo.metadata.camera,
+                  lens: photo.metadata.lens,
+                  distortion: a.distortion,
+                  vignette: a.lensVignette,
+                  sharpness: a.lensSharpness,
+                },
+              )
+            }
+          >
+            Save
+          </button>
+        </div>
+        <button
+          className="mask-batch"
+          onClick={() => {
+            const aperture =
+              Number(photo.metadata.aperture.replace(/[^0-9.]/g, "")) || 5.6;
+            const focal =
+              Number(photo.metadata.focalLength.replace(/[^0-9.]/g, "")) || 50;
+            setAdjustment(
+              "apertureCorrection",
+              Math.round(Math.max(0, 18 - aperture * 2)),
+            );
+            setAdjustment(
+              "cornerSharpness",
+              Math.round(Math.min(60, focal / 2)),
+            );
+          }}
+        >
+          Apply EXIF-aware correction
+        </button>
+        <AdjustSlider
+          label="Aperture softening"
+          value={a.apertureCorrection}
+          min={0}
+          onChange={(v) => setAdjustment("apertureCorrection", v)}
+        />
+        <AdjustSlider
+          label="Corner sharpness"
+          value={a.cornerSharpness}
+          min={0}
+          onChange={(v) => setAdjustment("cornerSharpness", v)}
         />
       </Panel>
       <Panel title="Geometry">
@@ -8227,10 +9974,66 @@ function PurePanels({
           onChange={(v) => setAdjustment("clarity", v)}
         />
         <AdjustSlider
+          label="Coarse"
+          value={a.coarseContrast}
+          onChange={(v) => setAdjustment("coarseContrast", v)}
+        />
+        <AdjustSlider
           label="Atmosphere"
           value={a.dehaze}
           onChange={(v) => setAdjustment("dehaze", v)}
         />
+      </Panel>
+      <Panel title="Computational detail" badge="Local" open={false}>
+        <AdjustSlider
+          label="Highlight reconstruction"
+          value={a.highlightRecovery}
+          min={0}
+          onChange={(v) => setAdjustment("highlightRecovery", v)}
+        />
+        <AdjustSlider
+          label="Hot / dead pixel repair"
+          value={a.hotPixelRepair}
+          min={0}
+          onChange={(v) => setAdjustment("hotPixelRepair", v)}
+        />
+        <AdjustSlider
+          label="Moiré reduction"
+          value={a.moireReduction}
+          min={0}
+          onChange={(v) => setAdjustment("moireReduction", v)}
+        />
+        <AdjustSlider
+          label="Neural denoise"
+          value={a.neuralDenoise}
+          min={0}
+          onChange={(v) => setAdjustment("neuralDenoise", v)}
+        />
+        <AdjustSlider
+          label="Deconvolution"
+          value={a.deconvolution}
+          min={0}
+          onChange={(v) => setAdjustment("deconvolution", v)}
+        />
+        <AdjustSlider
+          label="Super resolution"
+          value={a.superResolution}
+          min={100}
+          max={200}
+          resetValue={100}
+          onChange={(v) => setAdjustment("superResolution", v)}
+        />
+        <AdjustSlider
+          label="Subject-aware lens blur"
+          value={a.lensBlur}
+          min={0}
+          max={20}
+          onChange={(v) => setAdjustment("lensBlur", v)}
+        />
+        <p className="panel-note">
+          The preview uses a memory-safe proxy. Export runs from the original at
+          the selected resolution.
+        </p>
       </Panel>
     </>
   );
