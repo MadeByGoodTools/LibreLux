@@ -209,20 +209,20 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — Parametric tone curve
 - [ ] Planned — Point curve with draggable points
 - [x] Done — Independent red, green, and blue channel curves
-- [ ] Planned — Histogram clipping indicators
+- [x] Done — Histogram clipping indicators with sampled shadow and highlight counts
 - [ ] Planned — Direct histogram tonal adjustments
-- [ ] Planned — Auto tone with per-image analysis
+- [x] Done — Auto tone with per-image luminance and percentile analysis
 - [ ] Planned — HDR photo editing and gain maps
 - [ ] Planned — Scene-referred wide-gamut processing
 - [ ] Planned — Soft proofing and gamut warnings
-- [ ] Planned — Before/after split, side-by-side, and reference views
+- [x] Done — Before/after original, split, side-by-side, and reference views
 
 ## Develop — white balance and color grading
 
 - [x] Done — Temperature, tint, vibrance, and saturation
-- [ ] Planned — White-balance eyedropper and sampled neutral calculation
+- [x] Done — White-balance eyedropper and sampled neutral calculation
 - [x] Done — HSL color mixer for eight color ranges
-- [ ] Planned — Point Color sampler with hue, saturation, luminance, variance, and range
+- [x] Done — Point Color sampler with hue, saturation, luminance, variance, and range
 - [x] Done — Three-way color grading for shadows, midtones, and highlights
 - [x] Done — Global grading wheel, blending, and balance
 - [ ] Planned — Camera matching and creative profiles
