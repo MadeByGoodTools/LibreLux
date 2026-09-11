@@ -70,6 +70,7 @@ type CurveState = Record<
   { shadows: number; midtones: number; highlights: number }
 >;
 type MaskTarget =
+  | "brush"
   | "point"
   | "hair"
   | "skin"
@@ -82,9 +83,21 @@ type MaskTarget =
 type LocalAdjustments = {
   exposure: number;
   contrast: number;
+  highlights: number;
+  shadows: number;
   saturation: number;
+  vibrance: number;
+  hue: number;
   temperature: number;
+  tint: number;
   clarity: number;
+  texture: number;
+  dehaze: number;
+  sharpness: number;
+  noise: number;
+  curveShadows: number;
+  curveMidtones: number;
+  curveHighlights: number;
 };
 type PointColorSample = {
   band: ColorBand;
@@ -112,6 +125,10 @@ type MaskRecord = {
   feather: number;
   visible: boolean;
   inverted: boolean;
+  overlayColor: string;
+  overlayOpacity: number;
+  pinX: number;
+  pinY: number;
   adjustments: LocalAdjustments;
 };
 type Adjustments = {
@@ -327,9 +344,21 @@ const defaultCurves = Object.fromEntries(
 const defaultLocal: LocalAdjustments = {
   exposure: 0,
   contrast: 0,
+  highlights: 0,
+  shadows: 0,
   saturation: 0,
+  vibrance: 0,
+  hue: 0,
   temperature: 0,
+  tint: 0,
   clarity: 0,
+  texture: 0,
+  dehaze: 0,
+  sharpness: 0,
+  noise: 0,
+  curveShadows: 0,
+  curveMidtones: 0,
+  curveHighlights: 0,
 };
 const defaults: Adjustments = {
   exposure: 0,
@@ -852,7 +881,16 @@ function cssFilter(a: Adjustments) {
   return `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) sepia(${warmth}) hue-rotate(${hue}deg) blur(${blur}px)`;
 }
 function localFilter(a: LocalAdjustments) {
-  return `brightness(${Math.max(0.15, Math.pow(2, a.exposure))}) contrast(${Math.max(0.2, 1 + a.contrast / 100 + a.clarity / 260)}) saturate(${Math.max(0, 1 + a.saturation / 100)}) sepia(${Math.abs(a.temperature) / 650}) hue-rotate(${a.temperature < 0 ? -a.temperature / 18 : 0}deg)`;
+  const light =
+    a.exposure + a.highlights / 260 + a.shadows / 340 + a.curveMidtones / 300;
+  const contrast =
+    a.contrast / 100 +
+    a.clarity / 260 +
+    a.dehaze / 300 +
+    (a.curveHighlights - a.curveShadows) / 360;
+  const saturation = a.saturation / 100 + a.vibrance / 140;
+  const blur = Math.max(0, a.noise / 180 - a.sharpness / 650 - a.texture / 900);
+  return `brightness(${Math.max(0.15, Math.pow(2, light))}) contrast(${Math.max(0.2, 1 + contrast)}) saturate(${Math.max(0, 1 + saturation)}) sepia(${Math.abs(a.temperature) / 650}) hue-rotate(${a.hue + (a.temperature < 0 ? -a.temperature / 18 : 0) + a.tint / 30}deg) blur(${blur}px)`;
 }
 
 async function readImagePixels(url: string, size = 192) {
@@ -1169,6 +1207,10 @@ export default function Home() {
   const [maskTarget, setMaskTarget] = useState<MaskTarget | null>(null);
   const [maskTolerance, setMaskTolerance] = useState(28);
   const [maskFeather, setMaskFeather] = useState(6);
+  const [maskBrushSize, setMaskBrushSize] = useState(24);
+  const [maskBrushFlow, setMaskBrushFlow] = useState(75);
+  const [maskBrushDensity, setMaskBrushDensity] = useState(100);
+  const [maskAuto, setMaskAuto] = useState(true);
   const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
@@ -1285,6 +1327,10 @@ export default function Home() {
               ...mask,
               visible: mask.visible ?? true,
               inverted: mask.inverted ?? false,
+              overlayColor: mask.overlayColor ?? "#b6f36b",
+              overlayOpacity: mask.overlayOpacity ?? 48,
+              pinX: mask.pinX ?? 0.5,
+              pinY: mask.pinY ?? 0.5,
               adjustments: { ...defaultLocal, ...mask.adjustments },
             })),
             metadata: { ...emptyMetadata, ...p.metadata },
@@ -2793,6 +2839,10 @@ export default function Home() {
               maskTarget={maskTarget}
               maskTolerance={maskTolerance}
               maskFeather={maskFeather}
+              maskBrushSize={maskBrushSize}
+              maskBrushFlow={maskBrushFlow}
+              maskBrushDensity={maskBrushDensity}
+              maskAuto={maskAuto}
               onMaskCreated={addMask}
               selectedMaskId={selectedMaskId}
               setSelectedMaskId={setSelectedMaskId}
@@ -2908,6 +2958,14 @@ export default function Home() {
                   setMaskTolerance={setMaskTolerance}
                   maskFeather={maskFeather}
                   setMaskFeather={setMaskFeather}
+                  maskBrushSize={maskBrushSize}
+                  setMaskBrushSize={setMaskBrushSize}
+                  maskBrushFlow={maskBrushFlow}
+                  setMaskBrushFlow={setMaskBrushFlow}
+                  maskBrushDensity={maskBrushDensity}
+                  setMaskBrushDensity={setMaskBrushDensity}
+                  maskAuto={maskAuto}
+                  setMaskAuto={setMaskAuto}
                   selectedMaskId={selectedMaskId}
                   setSelectedMaskId={setSelectedMaskId}
                   updateMask={updateMask}
@@ -3722,6 +3780,10 @@ function EditorCanvas({
   maskTarget,
   maskTolerance,
   maskFeather,
+  maskBrushSize,
+  maskBrushFlow,
+  maskBrushDensity,
+  maskAuto,
   onMaskCreated,
   selectedMaskId,
   setSelectedMaskId,
@@ -3751,6 +3813,10 @@ function EditorCanvas({
   maskTarget: MaskTarget | null;
   maskTolerance: number;
   maskFeather: number;
+  maskBrushSize: number;
+  maskBrushFlow: number;
+  maskBrushDensity: number;
+  maskAuto: boolean;
   onMaskCreated: (mask: MaskRecord) => void;
   selectedMaskId: string | null;
   setSelectedMaskId: (id: string | null) => void;
@@ -3764,6 +3830,7 @@ function EditorCanvas({
 }) {
   const a = photo.adjustments;
   const imageRef = useRef<HTMLImageElement>(null);
+  const activeMask = photo.masks.find((mask) => mask.id === selectedMaskId);
   const [retouchSource, setRetouchSource] = useState<{
     x: number;
     y: number;
@@ -3815,7 +3882,35 @@ function EditorCanvas({
       output.data[p + 2] = 255;
       output.data[p + 3] = Math.max(0, Math.min(255, Math.round(alpha)));
     };
-    if (maskTarget === "linear") {
+    if (maskTarget === "brush") {
+      const radius = Math.max(0.02, maskBrushSize / 200);
+      const strength = (maskBrushFlow / 100) * (maskBrushDensity / 100);
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const dx = x / Math.max(1, width - 1) - normalizedX;
+          const dy = y / Math.max(1, height - 1) - normalizedY;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+          if (distance > radius) continue;
+          const p = (y * width + x) * 4;
+          const dr = pixels.data[p] - sr,
+            dg = pixels.data[p + 1] - sg,
+            db = pixels.data[p + 2] - sb;
+          const edge = Math.max(
+            0,
+            Math.min(1, (radius - distance) / Math.max(0.005, radius * 0.35)),
+          );
+          const colorMatch = maskAuto
+            ? Math.max(
+                0,
+                Math.min(
+                  1,
+                  1 - (dr * dr + dg * dg + db * db) / Math.max(1, threshold),
+                ),
+              )
+            : 1;
+          writePixel(y * width + x, 255 * strength * edge * colorMatch);
+        }
+    } else if (maskTarget === "linear") {
       for (let y = 0; y < height; y++)
         for (let x = 0; x < width; x++) {
           const distance = (x / Math.max(1, width - 1) - normalizedX) * 2;
@@ -3905,6 +4000,7 @@ function EditorCanvas({
       : "none";
     softCtx.drawImage(raw, 0, 0);
     const names: Record<MaskTarget, string> = {
+      brush: "Brush mask",
       point: "Magic selection",
       hair: "Hair",
       skin: "Skin",
@@ -3925,6 +4021,10 @@ function EditorCanvas({
       feather: maskFeather,
       visible: true,
       inverted: false,
+      overlayColor: "#b6f36b",
+      overlayOpacity: 48,
+      pinX: normalizedX,
+      pinY: normalizedY,
       adjustments: { ...defaultLocal },
     });
   };
@@ -4122,19 +4222,34 @@ function EditorCanvas({
             }}
           />
         )}
-        {selectedMaskId &&
-          photo.masks.find((mask) => mask.id === selectedMaskId)?.visible && (
-            <div
-              className="magic-highlight"
-              onClick={() => setSelectedMaskId(null)}
-              style={{
-                WebkitMaskImage: `url(${photo.masks.find((mask) => mask.id === selectedMaskId)?.dataUrl})`,
-                maskImage: `url(${photo.masks.find((mask) => mask.id === selectedMaskId)?.dataUrl})`,
-                WebkitMaskSize: "100% 100%",
-                maskSize: "100% 100%",
-              }}
-            />
-          )}
+        {activeMask?.visible && (
+          <div
+            className="magic-highlight"
+            onClick={() => setSelectedMaskId(null)}
+            style={{
+              background: activeMask.overlayColor,
+              opacity: activeMask.overlayOpacity / 100,
+              WebkitMaskImage: `url(${activeMask.dataUrl})`,
+              maskImage: `url(${activeMask.dataUrl})`,
+              WebkitMaskSize: "100% 100%",
+              maskSize: "100% 100%",
+            }}
+          />
+        )}
+        {activeMask?.visible && (
+          <button
+            className="mask-pin"
+            aria-label={`Selected mask pin: ${activeMask.name}`}
+            style={{
+              left: `${activeMask.pinX * 100}%`,
+              top: `${activeMask.pinY * 100}%`,
+            }}
+            onClick={(event) => {
+              event.stopPropagation();
+              setSelectedMaskId(activeMask.id);
+            }}
+          />
+        )}
         {picking && (
           <div className="mask-instruction">
             <WandSparkles />{" "}
@@ -4375,6 +4490,10 @@ function LibraryInspector({
             ...mask,
             visible: mask.visible ?? true,
             inverted: mask.inverted ?? false,
+            overlayColor: mask.overlayColor ?? "#b6f36b",
+            overlayOpacity: mask.overlayOpacity ?? 48,
+            pinX: mask.pinX ?? 0.5,
+            pinY: mask.pinY ?? 0.5,
             adjustments: { ...defaultLocal, ...mask.adjustments },
           })) ?? current.masks,
         retouchSpots: data.retouchSpots ?? current.retouchSpots,
@@ -4646,6 +4765,14 @@ function DevelopPanels({
   setMaskTolerance,
   maskFeather,
   setMaskFeather,
+  maskBrushSize,
+  setMaskBrushSize,
+  maskBrushFlow,
+  setMaskBrushFlow,
+  maskBrushDensity,
+  setMaskBrushDensity,
+  maskAuto,
+  setMaskAuto,
   selectedMaskId,
   setSelectedMaskId,
   updateMask,
@@ -4685,6 +4812,14 @@ function DevelopPanels({
   setMaskTolerance: (value: number) => void;
   maskFeather: number;
   setMaskFeather: (value: number) => void;
+  maskBrushSize: number;
+  setMaskBrushSize: (value: number) => void;
+  maskBrushFlow: number;
+  setMaskBrushFlow: (value: number) => void;
+  maskBrushDensity: number;
+  setMaskBrushDensity: (value: number) => void;
+  maskAuto: boolean;
+  setMaskAuto: (value: boolean) => void;
   selectedMaskId: string | null;
   setSelectedMaskId: (id: string | null) => void;
   updateMask: (id: string, updater: (mask: MaskRecord) => MaskRecord) => void;
@@ -4707,6 +4842,38 @@ function DevelopPanels({
 }) {
   const a = photo.adjustments;
   const selectedMask = photo.masks.find((mask) => mask.id === selectedMaskId);
+  const [combineMaskId, setCombineMaskId] = useState("");
+  const combineMasks = async (mode: "add" | "subtract" | "intersect") => {
+    if (!selectedMask || !combineMaskId) return;
+    const sourceMask = photo.masks.find((mask) => mask.id === combineMaskId);
+    if (!sourceMask) return;
+    const [base, source] = await Promise.all(
+      [selectedMask.dataUrl, sourceMask.dataUrl].map(async (url) => {
+        const image = new Image();
+        image.src = url;
+        await image.decode();
+        return image;
+      }),
+    );
+    const canvas = document.createElement("canvas");
+    canvas.width = base.naturalWidth;
+    canvas.height = base.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.drawImage(base, 0, 0);
+    context.globalCompositeOperation =
+      mode === "add"
+        ? "source-over"
+        : mode === "subtract"
+          ? "destination-out"
+          : "destination-in";
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+    updateMask(selectedMask.id, (mask) => ({
+      ...mask,
+      name: `${mask.name} ${mode} ${sourceMask.name}`,
+      dataUrl: canvas.toDataURL("image/png"),
+    }));
+  };
   return (
     <>
       <div className="quick-actions">
@@ -5419,6 +5586,7 @@ function DevelopPanels({
         <div className="mask-tools">
           {(
             [
+              ["brush", "Brush"],
               ["point", "Magic point"],
               ["hair", "Hair"],
               ["skin", "Skin"],
@@ -5440,6 +5608,40 @@ function DevelopPanels({
             </button>
           ))}
         </div>
+        {maskTarget === "brush" && (
+          <div className="brush-mask-controls">
+            <AdjustSlider
+              label="Brush size"
+              value={maskBrushSize}
+              min={4}
+              max={80}
+              resetValue={24}
+              onChange={setMaskBrushSize}
+            />
+            <AdjustSlider
+              label="Flow"
+              value={maskBrushFlow}
+              min={1}
+              max={100}
+              resetValue={75}
+              onChange={setMaskBrushFlow}
+            />
+            <AdjustSlider
+              label="Density"
+              value={maskBrushDensity}
+              min={1}
+              max={100}
+              resetValue={100}
+              onChange={setMaskBrushDensity}
+            />
+            <button
+              className={maskAuto ? "active" : ""}
+              onClick={() => setMaskAuto(!maskAuto)}
+            >
+              Auto-mask {maskAuto ? "on" : "off"}
+            </button>
+          </div>
+        )}
         <AdjustSlider
           label="Range tolerance"
           value={maskTolerance}
@@ -5517,13 +5719,170 @@ function DevelopPanels({
                 Delete
               </button>
             </div>
+            <div className="mask-overlay-controls">
+              <span>Overlay</span>
+              {["#b6f36b", "#ff5b68", "#65b8ff", "#f0c45a", "#c887ff"].map(
+                (color) => (
+                  <button
+                    key={color}
+                    aria-label={`Use ${color} overlay`}
+                    className={
+                      selectedMask.overlayColor === color ? "active" : ""
+                    }
+                    style={{ background: color }}
+                    onClick={() =>
+                      updateMask(selectedMask.id, (mask) => ({
+                        ...mask,
+                        overlayColor: color,
+                      }))
+                    }
+                  />
+                ),
+              )}
+            </div>
+            <AdjustSlider
+              label="Overlay opacity"
+              value={selectedMask.overlayOpacity}
+              min={5}
+              max={90}
+              resetValue={48}
+              onChange={(value) =>
+                updateMask(selectedMask.id, (mask) => ({
+                  ...mask,
+                  overlayOpacity: value,
+                }))
+              }
+            />
+            {photo.masks.length > 1 && (
+              <div className="mask-combine">
+                <select
+                  aria-label="Mask to combine"
+                  value={combineMaskId}
+                  onChange={(event) => setCombineMaskId(event.target.value)}
+                >
+                  <option value="">Choose another mask</option>
+                  {photo.masks
+                    .filter((mask) => mask.id !== selectedMask.id)
+                    .map((mask) => (
+                      <option key={mask.id} value={mask.id}>
+                        {mask.name}
+                      </option>
+                    ))}
+                </select>
+                <div>
+                  <button
+                    disabled={!combineMaskId}
+                    onClick={() => void combineMasks("add")}
+                  >
+                    Add
+                  </button>
+                  <button
+                    disabled={!combineMaskId}
+                    onClick={() => void combineMasks("subtract")}
+                  >
+                    Subtract
+                  </button>
+                  <button
+                    disabled={!combineMaskId}
+                    onClick={() => void combineMasks("intersect")}
+                  >
+                    Intersect
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="mask-presets">
+              <button
+                onClick={() =>
+                  updateMask(selectedMask.id, (mask) => ({
+                    ...mask,
+                    adjustments: {
+                      ...defaultLocal,
+                      exposure: 0.3,
+                      shadows: 18,
+                      clarity: -12,
+                      texture: -18,
+                    },
+                  }))
+                }
+              >
+                Portrait soften
+              </button>
+              <button
+                onClick={() =>
+                  updateMask(selectedMask.id, (mask) => ({
+                    ...mask,
+                    adjustments: {
+                      ...defaultLocal,
+                      highlights: -28,
+                      dehaze: 18,
+                      saturation: 12,
+                    },
+                  }))
+                }
+              >
+                Sky recover
+              </button>
+              <button
+                onClick={() =>
+                  updateMask(selectedMask.id, (mask) => ({
+                    ...mask,
+                    adjustments: {
+                      ...defaultLocal,
+                      clarity: 22,
+                      texture: 28,
+                      sharpness: 20,
+                    },
+                  }))
+                }
+              >
+                Detail lift
+              </button>
+              <button
+                onClick={() =>
+                  updateMask(selectedMask.id, (mask) => ({
+                    ...mask,
+                    adjustments: { ...defaultLocal },
+                  }))
+                }
+              >
+                Reset local
+              </button>
+            </div>
+            {photo.masks.length > 1 && (
+              <button
+                className="mask-batch"
+                onClick={() =>
+                  photo.masks.forEach((mask) =>
+                    updateMask(mask.id, (current) => ({
+                      ...current,
+                      adjustments: { ...selectedMask.adjustments },
+                    })),
+                  )
+                }
+              >
+                Adapt these settings to all masks
+              </button>
+            )}
             {(
               [
                 ["exposure", "Exposure", -3, 3, 0.05],
                 ["contrast", "Contrast", -100, 100, 1],
+                ["highlights", "Highlights", -100, 100, 1],
+                ["shadows", "Shadows", -100, 100, 1],
                 ["saturation", "Saturation", -100, 100, 1],
+                ["vibrance", "Vibrance", -100, 100, 1],
+                ["hue", "Hue", -180, 180, 1],
                 ["temperature", "Temperature", -100, 100, 1],
+                ["tint", "Tint", -100, 100, 1],
                 ["clarity", "Clarity", -100, 100, 1],
+                ["texture", "Texture", -100, 100, 1],
+                ["dehaze", "Dehaze", -100, 100, 1],
+                ["sharpness", "Sharpness", -100, 100, 1],
+                ["noise", "Noise reduction", 0, 100, 1],
+                ["curveShadows", "Curve shadows", -100, 100, 1],
+                ["curveMidtones", "Curve midtones", -100, 100, 1],
+                ["curveHighlights", "Curve highlights", -100, 100, 1],
               ] as const
             ).map(([key, label, min, max, step]) => (
               <AdjustSlider

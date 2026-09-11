@@ -260,7 +260,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Local masking and selective editing
 
-- [ ] Planned — Brush mask with size, feather, flow, density, and auto-mask
+- [x] Done — Brush mask with size, feather, flow, density, and auto-mask
 - [x] Done — Linear gradient mask
 - [x] Done — Radial gradient mask
 - [x] Done — Luminance range mask
@@ -268,11 +268,11 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [ ] Planned — Depth range mask when source data exists
 - [ ] Planned — Subject, sky, background, and object selection
 - [ ] Planned — People selection and facial-feature refinement
-- [ ] Planned — Add, subtract, intersect, invert, duplicate, and rename masks
-- [ ] Planned — Mask overlay colors, opacity, pins, and visibility
-- [ ] Planned — Per-mask light, color, detail, effects, and curve controls
+- [x] Done — Add, subtract, intersect, invert, duplicate, and rename masks
+- [x] Done — Mask overlay colors, opacity, pins, and visibility
+- [x] Done — Per-mask light, color, detail, effects, and curve controls
 - [x] Done — Mask feather and edge refinement
-- [ ] Planned — Mask presets and batch adaptation
+- [x] Done — Mask presets and batch adaptation
 
 ## Retouching and generative assistance
 

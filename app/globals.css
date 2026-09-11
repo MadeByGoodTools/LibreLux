@@ -1642,6 +1642,109 @@ button {
     max-height: calc(100vh - 245px);
   }
 }
+.mask-pin {
+  position: absolute;
+  z-index: 8;
+  width: 13px;
+  height: 13px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #f6fff0;
+  border-radius: 50%;
+  background: #20291c;
+  box-shadow:
+    0 0 0 1px #111,
+    0 1px 5px #000;
+  cursor: pointer;
+}
+.brush-mask-controls {
+  border: 1px solid #344038;
+  border-radius: 6px;
+  background: #1b211d;
+  padding: 5px 8px;
+  margin: 7px 0;
+}
+.brush-mask-controls > button {
+  width: 100%;
+  height: 27px;
+  border: 1px solid #3b443d;
+  border-radius: 5px;
+  background: #252b27;
+  color: #aeb7af;
+  font-size: 9px;
+  cursor: pointer;
+}
+.brush-mask-controls > button.active {
+  border-color: #71994c;
+  background: #293526;
+  color: #d8ffad;
+}
+.mask-overlay-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.mask-overlay-controls span {
+  font-size: 9px;
+  color: #89938b;
+  margin-right: auto;
+}
+.mask-overlay-controls button {
+  width: 17px;
+  height: 17px;
+  border: 2px solid #303631;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.mask-overlay-controls button.active {
+  box-shadow: 0 0 0 2px #dfffbc;
+}
+.mask-combine {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 8px 0;
+}
+.mask-combine select {
+  height: 29px;
+  border: 1px solid #3b443d;
+  border-radius: 5px;
+  background: #202521;
+  color: #c9d1ca;
+  padding: 0 7px;
+  font-size: 9px;
+}
+.mask-combine > div {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+.mask-combine button,
+.mask-presets button,
+.mask-batch {
+  min-height: 27px;
+  border: 1px solid #3b443d;
+  border-radius: 5px;
+  background: #252b27;
+  color: #aeb7af;
+  font-size: 9px;
+  cursor: pointer;
+}
+.mask-combine button:disabled {
+  opacity: 0.35;
+}
+.mask-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 8px 0;
+}
+.mask-batch {
+  width: 100%;
+  color: #d8ffad;
+  border-color: #668a42;
+  margin-bottom: 5px;
+}
 @media (max-width: 650px) {
   .workspace {
     grid-template-columns: minmax(0, 1fr) 0;
