@@ -1,7 +1,13 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "librelux",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "license": "MIT",
+  "homepage": "https://librelux.goodtools.ca",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MadeByGoodTools/LibreLux.git"
+  },
   "packageManager": "pnpm@10.15.1",
   "engines": {
     "node": ">=22.13.0"
