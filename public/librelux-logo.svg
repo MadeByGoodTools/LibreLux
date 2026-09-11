@@ -1,24 +1,24 @@
 <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="lens" x1="9" y1="7" x2="39" y2="41" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#17241F"/>
-      <stop offset="1" stop-color="#07100D"/>
-    </linearGradient>
-    <linearGradient id="layerA" x1="10" y1="13" x2="33" y2="37" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#A6F46B"/>
-      <stop offset="1" stop-color="#44D69B"/>
-    </linearGradient>
-    <linearGradient id="layerB" x1="20" y1="22" x2="40" y2="42" gradientUnits="userSpaceOnUse">
+    <linearGradient id="layer-one" x1="4" y1="4" x2="32" y2="32" gradientUnits="userSpaceOnUse">
       <stop stop-color="#43DBA4"/>
+      <stop offset="1" stop-color="#35C5AD"/>
+    </linearGradient>
+    <linearGradient id="layer-two" x1="16" y1="16" x2="44" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34C9AF"/>
       <stop offset="1" stop-color="#269FBF"/>
     </linearGradient>
   </defs>
-  <circle cx="24" cy="23" r="20" fill="url(#lens)" stroke="#47645A" stroke-width="2"/>
-  <circle cx="24" cy="23" r="13.5" fill="#102A25" stroke="#79D9AE" stroke-opacity=".62"/>
-  <path d="M24 9.5 31.6 14 32 22.8 24 27.5 16.4 23 16 14.2 24 9.5Z" fill="#1C5C50" stroke="#8BE6BE" stroke-opacity=".48"/>
-  <circle cx="24" cy="23" r="5.5" fill="#071411" stroke="#B9F5D7" stroke-opacity=".72"/>
-  <rect x="6" y="19" width="25" height="25" rx="6" fill="url(#layerA)" stroke="#DCFFC3" stroke-opacity=".55"/>
-  <rect x="17" y="25" width="25" height="19" rx="6" fill="url(#layerB)" fill-opacity=".94" stroke="#D9FFF0" stroke-opacity=".5"/>
-  <path d="M13 25.5v11h8" stroke="#092019" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M25 31v7h7" stroke="#ECFFF7" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- The lens sits behind the unchanged LibreLayer-style stacked tiles. -->
+  <circle cx="34" cy="13" r="12" fill="#0C1513" stroke="#6EDDB4" stroke-width="2"/>
+  <circle cx="34" cy="13" r="8" fill="#163B35" stroke="#B1F4D5" stroke-opacity=".55"/>
+  <path d="M34 5 39.2 8 39.2 14 34 17 28.8 14 28.8 8 34 5Z" fill="#235B51"/>
+  <circle cx="34" cy="13" r="3.25" fill="#07110F" stroke="#D7FFEB" stroke-opacity=".7"/>
+  <circle cx="30.5" cy="8.5" r="1.2" fill="#E8FFF5" fill-opacity=".72"/>
+
+  <rect x="4" y="4" width="28" height="28" rx="6" fill="url(#layer-one)" stroke="#DFFFF2" stroke-opacity=".42"/>
+  <rect x="16" y="16" width="28" height="28" rx="6" fill="url(#layer-two)" fill-opacity=".94" stroke="#E7FFF7" stroke-opacity=".42"/>
+  <path d="M14 11V23H22" stroke="#07150F" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26 23V35H34" stroke="#EFFFF8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
