@@ -6,16 +6,69 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Batch 1 — Foundation and local workflow
 
-- [ ] In progress — Multi-photo browser import
-- [ ] In progress — Device-local photo library using IndexedDB
-- [ ] In progress — Restore the last library and selected photo after reopening
-- [ ] In progress — Grid view, detail view, and persistent filmstrip
-- [ ] In progress — Library, Develop, Enhance, and Export workspaces
-- [ ] In progress — Non-destructive per-photo edit instructions
-- [ ] In progress — Undo, redo, reset, and original/edited comparison
-- [ ] In progress — Full-resolution JPEG export
-- [ ] In progress — Responsive desktop and compact layouts
-- [ ] In progress — Keyboard routes for modules, ratings, undo, and compare
+- [x] Done — Multi-photo browser import
+- [x] Done — Device-local photo library using IndexedDB
+- [x] Done — Restore the last library and selected photo after reopening
+- [x] Done — Grid view, detail view, and persistent filmstrip
+- [x] Done — Library, Develop, Enhance, and Export workspaces
+- [x] Done — Non-destructive per-photo edit instructions
+- [x] Done — Undo, redo, reset, and original/edited comparison
+- [x] Done — Full-resolution JPEG export
+- [x] Done — Responsive desktop and compact layouts
+- [x] Done — Keyboard routes for modules, ratings, undo, and compare
+
+## Batch 2 — 50 completed additions
+
+- [x] Done — Remember the active photo between browser sessions
+- [x] Done — Edited-photo catalog view with live counts
+- [x] Done — Rejected-photo catalog view with live counts
+- [x] Done — Sort library by most recent
+- [x] Done — Sort library alphabetically by filename
+- [x] Done — Sort library by star rating
+- [x] Done — Sort library by file size
+- [x] Done — Reject flag button and X keyboard shortcut
+- [x] Done — Pick flag button and P keyboard shortcut
+- [x] Done — Clear flag state with U keyboard shortcut
+- [x] Done — Persistent photo title field
+- [x] Done — Persistent photo caption field
+- [x] Done — Persistent creator field
+- [x] Done — Persistent copyright field
+- [x] Done — Add persistent keywords
+- [x] Done — Remove persistent keywords
+- [x] Done — Copy edit settings button and shortcut
+- [x] Done — Paste edit settings button and shortcut
+- [x] Done — One-click black-and-white conversion
+- [x] Done — Global hue rotation control
+- [x] Done — Shadow color-grading hue
+- [x] Done — Shadow color-grading saturation
+- [x] Done — Midtone color-grading hue
+- [x] Done — Midtone color-grading saturation
+- [x] Done — Highlight color-grading hue
+- [x] Done — Highlight color-grading saturation
+- [x] Done — Color-grading balance control
+- [x] Done — Sharpening amount control
+- [x] Done — Sharpening radius control
+- [x] Done — Sharpening detail control
+- [x] Done — Sharpening masking control
+- [x] Done — Vignette midpoint control
+- [x] Done — Vignette feather control
+- [x] Done — Grain size control
+- [x] Done — Grain roughness control
+- [x] Done — Lens-vignetting correction control
+- [x] Done — Defringe strength control
+- [x] Done — Geometry aspect control
+- [x] Done — Geometry scale control
+- [x] Done — Geometry horizontal offset
+- [x] Done — Geometry vertical offset
+- [x] Done — Horizontal image flip
+- [x] Done — Vertical image flip
+- [x] Done — Crop mode with rule-of-thirds overlay
+- [x] Done — Original-ratio and 1:1 crop presets
+- [x] Done — 4:5, 3:2, and 16:9 crop presets
+- [x] Done — PNG export
+- [x] Done — WebP export
+- [x] Done — 25%, 50%, and 100% export sizing
+- [x] Done — Format-aware export filenames and controls
 
 ## Library, catalog, and culling
 
@@ -46,8 +99,8 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Develop — light and tone
 
-- [ ] In progress — Exposure, contrast, highlights, shadows, whites, and blacks
-- [ ] In progress — Parametric tone controls with stable sliders
+- [x] Done — Exposure, contrast, highlights, shadows, whites, and blacks
+- [x] Done — Parametric tone controls with stable sliders
 - [ ] Planned — Parametric tone curve
 - [ ] Planned — Point curve with draggable points
 - [ ] Planned — Independent red, green, and blue channel curves
@@ -61,7 +114,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Develop — white balance and color grading
 
-- [ ] In progress — Temperature, tint, vibrance, and saturation
+- [x] Done — Temperature, tint, vibrance, and saturation
 - [ ] Planned — White-balance eyedropper and sampled neutral calculation
 - [ ] Planned — HSL color mixer for eight color ranges
 - [ ] Planned — Point Color sampler with hue, saturation, luminance, variance, and range
@@ -76,8 +129,8 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Develop — presence, detail, and effects
 
-- [ ] In progress — Texture, clarity, and dehaze
-- [ ] In progress — Post-crop vignette and grain
+- [x] Done — Texture, clarity, and dehaze
+- [x] Done — Post-crop vignette and grain
 - [ ] Planned — Sharpening amount, radius, detail, and masking
 - [ ] Planned — Luminance noise reduction with detail and contrast
 - [ ] Planned — Color noise reduction with detail and smoothness
@@ -87,7 +140,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Crop, geometry, and transforms
 
-- [ ] In progress — Rotate left, rotate right, and free rotation
+- [x] Done — Rotate left, rotate right, and free rotation
 - [ ] Planned — Crop overlay and draggable handles
 - [ ] Planned — Original, custom, print, screen, and social aspect presets
 - [ ] Planned — Straighten tool and auto level
@@ -131,9 +184,9 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Libre Optics — camera and lens correction
 
-- [ ] In progress — Integrated Optics & Enhance workspace
-- [ ] In progress — One-click analyze-and-enhance starting point
-- [ ] In progress — Manual distortion, vignetting, chromatic aberration, and sharpness controls
+- [x] Done — Integrated Optics & Enhance workspace
+- [x] Done — One-click analyze-and-enhance starting point
+- [x] Done — Manual distortion, vignetting, chromatic aberration, and sharpness controls
 - [ ] Planned — EXIF-based camera and lens identification
 - [ ] Planned — Community-owned camera and lens profile database
 - [ ] Planned — Profile download, caching, versioning, and offline reuse
@@ -147,8 +200,8 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Libre Enhance — RAW and computational imaging
 
-- [ ] In progress — Luminance and color-noise controls
-- [ ] In progress — Detail recovery and lens-sharpness controls
+- [x] Done — Luminance and color-noise controls
+- [x] Done — Detail recovery and lens-sharpness controls
 - [ ] Planned — Browser-worker image pipeline using OffscreenCanvas
 - [ ] Planned — WebGPU acceleration with CPU and WebAssembly fallbacks
 - [ ] Planned — Bayer and X-Trans demosaicing
@@ -167,7 +220,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Presets, profiles, and film rendering
 
-- [ ] In progress — Built-in creative preset gallery
+- [x] Done — Built-in creative preset gallery
 - [ ] Planned — Preset amount slider
 - [ ] Planned — Create, rename, update, delete, import, and export presets
 - [ ] Planned — Partial-compatible preset detection
@@ -192,8 +245,8 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Export and output
 
-- [ ] In progress — Full-resolution JPEG export
-- [ ] In progress — JPEG quality control and safe derivative naming
+- [x] Done — Full-resolution JPEG export
+- [x] Done — JPEG quality control and safe derivative naming
 - [ ] Planned — PNG, WebP, AVIF, TIFF, and DNG export where supported
 - [ ] Planned — Original plus settings package export
 - [ ] Planned — Resize by dimensions, long edge, short edge, megapixels, and percentage
@@ -212,7 +265,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## File formats and interoperability
 
-- [ ] In progress — JPEG, PNG, WebP, and browser-decodable images
+- [x] Done — JPEG, PNG, WebP, and browser-decodable images
 - [ ] Planned — HEIC and HEIF capability detection and decoder fallback
 - [ ] Planned — TIFF including 16-bit sources
 - [ ] Planned — DNG decoding
@@ -226,8 +279,8 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Performance, large files, and reliability
 
-- [ ] In progress — Local-first editing with no required account
-- [ ] In progress — Originals remain on the user’s device
+- [x] Done — Local-first editing with no required account
+- [x] Done — Originals remain on the user’s device
 - [ ] Planned — Tiled rendering for very large images
 - [ ] Planned — Smart previews and proxies
 - [ ] Planned — Worker pools for decode, render, analyze, and export
@@ -252,9 +305,9 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Accessibility and workflow polish
 
-- [ ] In progress — Familiar panels, filmstrip, histogram, terminology, and shortcuts
-- [ ] In progress — Stable touch and pointer sliders
-- [ ] In progress — Accessible names and tooltips for icon buttons
+- [x] Done — Familiar panels, filmstrip, histogram, terminology, and shortcuts
+- [x] Done — Stable touch and pointer sliders
+- [x] Done — Accessible names and tooltips for icon buttons
 - [ ] Planned — Command palette and editable shortcut map
 - [ ] Planned — Screen-reader workflow for library and editor
 - [ ] Planned — 200% text, high-contrast, reduced-motion, and keyboard-only audits
