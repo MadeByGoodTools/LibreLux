@@ -1805,6 +1805,16 @@ button {
   position: relative;
   z-index: 1;
 }
+.depth-focus-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: auto;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 2;
+}
 .dust-visualization {
   position: absolute;
   inset: 0;
@@ -3127,6 +3137,129 @@ button {
 .app-shell.compact-ui .histogram svg {
   height: 57px;
 }
+.panel-scroll {
+  display: flex;
+  flex-direction: column;
+}
+.panel-workspace-editor {
+  border: 1px solid #343c36;
+  border-radius: 7px;
+  background: #1b201c;
+  padding: 9px;
+  display: grid;
+  gap: 6px;
+}
+.panel-order-row {
+  display: grid;
+  grid-template-columns: 54px 1fr 30px 30px;
+  align-items: center;
+  gap: 5px;
+}
+.panel-order-row button,
+.workspace-preset-actions button,
+.panel-workspace-editor > button,
+.preset-search-row button,
+.film-era-browser button,
+.video-presets button {
+  border: 1px solid #3a433c;
+  border-radius: 5px;
+  background: #252b26;
+  color: #cbd3cc;
+  padding: 6px 8px;
+}
+.panel-order-row button[aria-pressed="true"],
+.preset-search-row button.active,
+.film-era-browser button.active {
+  border-color: #84b64f;
+  color: #d9ffac;
+}
+.workspace-preset-actions,
+.preset-search-row,
+.film-era-browser,
+.video-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.preset-search-row input {
+  flex: 1;
+  min-width: 120px;
+  border: 1px solid #384139;
+  border-radius: 5px;
+  background: #161a17;
+  color: #eef3ef;
+  padding: 7px 8px;
+}
+.snapshot-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.snapshot-grid > div {
+  position: relative;
+}
+.snapshot-grid img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 5px;
+}
+.snapshot-grid > div > button:last-child {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+}
+.snapshot-grid svg {
+  width: 13px;
+  height: 13px;
+}
+.raw-details {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0;
+}
+.raw-details div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+.raw-details dt {
+  color: #7f8981;
+}
+.video-lab-dialog {
+  width: min(920px, calc(100vw - 30px));
+  max-width: 920px;
+}
+.video-lab-dialog video {
+  width: 100%;
+  max-height: 52vh;
+  background: #080a08;
+  object-fit: contain;
+}
+.video-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+.video-controls label {
+  display: grid;
+  grid-template-columns: 95px 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.video-controls input,
+.video-drop {
+  border: 1px solid #3d463f;
+  border-radius: 6px;
+  background: #181d19;
+  color: #e9eeea;
+  padding: 8px;
+}
+.video-drop {
+  min-height: 180px;
+}
 @media (max-width: 650px) {
   .preset-commit.floating {
     grid-template-columns: 1fr auto auto;
@@ -3141,5 +3274,8 @@ button {
   }
   .preference-list input {
     width: 110px;
+  }
+  .video-controls {
+    grid-template-columns: 1fr;
   }
 }

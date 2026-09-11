@@ -39,10 +39,31 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import * as exifr from "exifr";
+import {
+  decodeEditableSource,
+  isRawFile,
+  isTiffFile,
+  type RawDecodeInfo,
+} from "./image-codecs";
+import {
+  applyDepthAwareLensBlur,
+  applyTiledDetail,
+  estimateGpuBudget,
+} from "./image-processing";
+import { createPreviewInWorker } from "./image-worker-pool";
+import { VideoLab } from "./video-lab";
 import {
   Dialog,
   DialogContent,
@@ -84,6 +105,7 @@ type MaskTarget =
   | "sky"
   | "linear"
   | "radial"
+  | "polygon"
   | "luminance"
   | "color"
   | "depth"
@@ -144,6 +166,12 @@ type MaskRecord = {
   pinX: number;
   pinY: number;
   adjustments: LocalAdjustments;
+};
+type DevelopSnapshot = {
+  id: string;
+  name: string;
+  createdAt: number;
+  adjustments: Adjustments;
 };
 type Adjustments = {
   exposure: number;
@@ -241,6 +269,10 @@ type Adjustments = {
   lensBlur: number;
   cornerSharpness: number;
   apertureCorrection: number;
+  negativeInversion: number;
+  paperGrade: number;
+  darkroomFilter: number;
+  textureAsset: number;
   hsl: HslState;
   bwMix: Record<ColorBand, number>;
   curves: CurveState;
@@ -292,6 +324,9 @@ type PhotoRecord = {
   missing: boolean;
   processVersion: "2026" | "2025";
   previewBlob: Blob | null;
+  displayBlob: Blob | null;
+  sourceBitDepth: number;
+  rawInfo: RawDecodeInfo | null;
   aiHistory: Array<{
     id: string;
     action: string;
@@ -299,6 +334,9 @@ type PhotoRecord = {
     createdAt: number;
   }>;
   peopleCluster: string;
+  snapshots: DevelopSnapshot[];
+  importMethod: ImportMethod;
+  sourceHandle: StoredFileHandle | null;
 };
 type RuntimePhoto = PhotoRecord & { url: string; previewUrl: string };
 type PresetChoice = {
@@ -312,12 +350,14 @@ type UserPreset = {
   group: string;
   settings: Partial<Adjustments>;
   createdAt: number;
+  favorite: boolean;
 };
 type DirectoryPermissionState =
   | "ready"
   | "needs-permission"
   | "unsupported"
   | "none";
+type ImportMethod = "copy" | "add" | "move";
 type AlbumRecord = {
   id: string;
   name: string;
@@ -365,6 +405,13 @@ interface WritableFileHandle {
     close: () => Promise<void>;
   }>;
 }
+interface StoredFileHandle extends WritableFileHandle {
+  name: string;
+  getFile: () => Promise<File>;
+  queryPermission?: (options: { mode: "read" }) => Promise<PermissionState>;
+  requestPermission?: (options: { mode: "read" }) => Promise<PermissionState>;
+  remove?: () => Promise<void>;
+}
 interface StoredDirectoryHandle {
   kind?: "directory";
   name: string;
@@ -390,6 +437,13 @@ interface StoredDirectoryHandle {
 declare global {
   interface Window {
     showDirectoryPicker?: () => Promise<StoredDirectoryHandle>;
+    showOpenFilePicker?: (options?: {
+      multiple?: boolean;
+      types?: Array<{
+        description: string;
+        accept: Record<string, string[]>;
+      }>;
+    }) => Promise<StoredFileHandle[]>;
   }
 }
 
@@ -550,6 +604,10 @@ const defaults: Adjustments = {
   lensBlur: 0,
   cornerSharpness: 0,
   apertureCorrection: 0,
+  negativeInversion: 0,
+  paperGrade: 0,
+  darkroomFilter: 0,
+  textureAsset: 0,
   hsl: defaultHsl,
   bwMix: defaultBw,
   curves: defaultCurves,
@@ -859,6 +917,16 @@ const builtInExportRecipes: ExportRecipe[] = [
     watermark: "",
   },
 ];
+const defaultPanelOrder = [
+  "My presets",
+  "Light",
+  "Color",
+  "Color mixer",
+  "Tone curve",
+  "Detail",
+  "Effects",
+  "Magic local masks",
+];
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -892,6 +960,8 @@ async function savePhoto(photo: PhotoRecord | RuntimePhoto) {
     previewUrl: _previewUrl,
     ...stored
   } = photo as RuntimePhoto;
+  if (stored.importMethod === "add" && stored.sourceHandle)
+    stored.blob = new Blob([], { type: stored.type });
   void _url;
   void _previewUrl;
   return new Promise<void>((resolve, reject) => {
@@ -1020,6 +1090,7 @@ function cssFilter(a: Adjustments, processVersion: "2026" | "2025" = "2026") {
       a.sharpness / 900 +
       a.lensSharpness / 1000 +
       a.coarseContrast / 220 +
+      a.paperGrade / 500 +
       a.deconvolution / 1100 +
       a.cornerSharpness / 1400 +
       -a.fade / 260,
@@ -1070,10 +1141,9 @@ function cssFilter(a: Adjustments, processVersion: "2026" | "2025" = "2026") {
       180 -
       a.sharpDetail / 3000 +
       a.bloom / 1300 +
-      a.glassDistortion / 1800 +
-      a.lensBlur / 70,
+      a.glassDistortion / 1800,
   );
-  return `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) sepia(${warmth}) hue-rotate(${hue}deg) blur(${blur}px)`;
+  return `brightness(${brightness}) contrast(${contrast}) saturate(${saturation}) sepia(${warmth}) hue-rotate(${hue + a.darkroomFilter}deg) invert(${a.negativeInversion / 100}) blur(${blur}px)`;
 }
 function localFilter(a: LocalAdjustments) {
   const light =
@@ -1300,22 +1370,10 @@ async function createSmartPreview(file: Blob): Promise<Blob | null> {
     typeof createImageBitmap !== "undefined"
   ) {
     try {
-      const bitmap = await createImageBitmap(file);
       const memory = (navigator as Navigator & { deviceMemory?: number })
         .deviceMemory;
       const maxEdge = memory && memory <= 4 ? 1200 : 2000;
-      return await new Promise<Blob | null>((resolve) => {
-        const worker = new Worker("/image-worker.js");
-        worker.onmessage = (event) => {
-          worker.terminate();
-          resolve(event.data?.blob instanceof Blob ? event.data.blob : null);
-        };
-        worker.onerror = () => {
-          worker.terminate();
-          resolve(null);
-        };
-        worker.postMessage({ bitmap, maxEdge }, [bitmap]);
-      });
+      return (await createPreviewInWorker(file, maxEdge)).blob;
     } catch {
       // Continue through the main-thread compatibility path below.
     }
@@ -1613,6 +1671,17 @@ function AdjustSlider({
     </div>
   );
 }
+type PanelWorkspacePreferences = {
+  order: string[];
+  hidden: string[];
+  solo: boolean;
+  active: string | null;
+  setActive: (title: string | null) => void;
+};
+const PanelWorkspaceContext = createContext<PanelWorkspacePreferences | null>(
+  null,
+);
+
 function Panel({
   title,
   children,
@@ -1624,8 +1693,22 @@ function Panel({
   open?: boolean;
   badge?: string;
 }) {
+  const workspacePreferences = useContext(PanelWorkspaceContext);
+  if (workspacePreferences?.hidden.includes(title)) return null;
+  const order = workspacePreferences?.order.indexOf(title) ?? -1;
+  const isOpen = workspacePreferences?.solo
+    ? workspacePreferences.active === title
+    : open;
   return (
-    <details className="panel" open={open}>
+    <details
+      className="panel"
+      open={isOpen}
+      style={{ order: order < 0 ? 999 : order }}
+      onToggle={(event) => {
+        if (!workspacePreferences?.solo) return;
+        workspacePreferences.setActive(event.currentTarget.open ? title : null);
+      }}
+    >
       <summary>
         <ChevronDown size={15} />
         <span>{title}</span>
@@ -1642,6 +1725,10 @@ export default function Home() {
       ? 4
       : ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ??
         4);
+  const processingBudget = useMemo(
+    () => estimateGpuBudget(deviceMemory),
+    [deviceMemory],
+  );
   const [workspace, setWorkspace] = useState<Workspace>("develop");
   const [opticsMode, setOpticsMode] = useState<OpticsMode>("pure");
   const [photos, setPhotos] = useState<RuntimePhoto[]>([]);
@@ -1720,7 +1807,6 @@ export default function Home() {
   const [maskBrushDensity, setMaskBrushDensity] = useState(100);
   const [maskAuto, setMaskAuto] = useState(true);
   const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const [albums, setAlbums] = useState<AlbumRecord[]>([]);
   const [activeAlbumId, setActiveAlbumId] = useState<string | null>(null);
@@ -1747,6 +1833,10 @@ export default function Home() {
   const [compactUi, setCompactUi] = useState(false);
   const [largeText, setLargeText] = useState(false);
   const [learningTips, setLearningTips] = useState(true);
+  const [panelOrder, setPanelOrder] = useState(defaultPanelOrder);
+  const [hiddenPanels, setHiddenPanels] = useState<string[]>([]);
+  const [soloPanels, setSoloPanels] = useState(false);
+  const [activePanel, setActivePanel] = useState<string | null>(null);
   const [showFilmstrip, setShowFilmstrip] = useState(true);
   const [gridSize, setGridSize] = useState(155);
   const [showClipping, setShowClipping] = useState(false);
@@ -1774,11 +1864,13 @@ export default function Home() {
   const [duplicateImport, setDuplicateImport] = useState<"skip" | "copy">(
     "skip",
   );
+  const [importMethod, setImportMethod] = useState<ImportMethod>("copy");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [tetherOpen, setTetherOpen] = useState(false);
   const [tetherStream, setTetherStream] = useState<MediaStream | null>(null);
   const tetherVideoRef = useRef<HTMLVideoElement>(null);
   const [slideshowOpen, setSlideshowOpen] = useState(false);
+  const [videoLabOpen, setVideoLabOpen] = useState(false);
   const [slideshowIndex, setSlideshowIndex] = useState(0);
   const [proofProfile, setProofProfile] = useState<ColorSpace>("srgb");
   const [softProof, setSoftProof] = useState(false);
@@ -1909,46 +2001,79 @@ export default function Home() {
           await savePhoto(journal.photo).catch(() => undefined);
           await removeSetting("edit-journal").catch(() => undefined);
         }
-        const runtime = records
-          .sort((a, b) => b.createdAt - a.createdAt)
-          .map((p) => ({
-            ...p,
-            editedAt: p.editedAt ?? p.createdAt,
-            folder: p.folder ?? "Local library",
-            virtualOf: p.virtualOf ?? null,
-            rejected: p.rejected ?? false,
-            retouchSpots: p.retouchSpots ?? [],
-            perceptualHash: p.perceptualHash ?? "",
-            cull: p.cull ?? { focus: 0, exposure: 0, faces: 0, similarity: 0 },
-            stackId: p.stackId ?? null,
-            missing: p.missing ?? false,
-            processVersion: p.processVersion ?? "2026",
-            previewBlob: p.previewBlob ?? null,
-            aiHistory: p.aiHistory ?? [],
-            peopleCluster: p.peopleCluster ?? "",
-            masks: (p.masks ?? []).map((mask) => ({
-              ...mask,
-              visible: mask.visible ?? true,
-              inverted: mask.inverted ?? false,
-              overlayColor: mask.overlayColor ?? "#b6f36b",
-              overlayOpacity: mask.overlayOpacity ?? 48,
-              pinX: mask.pinX ?? 0.5,
-              pinY: mask.pinY ?? 0.5,
-              adjustments: { ...defaultLocal, ...mask.adjustments },
-            })),
-            metadata: { ...emptyMetadata, ...p.metadata },
-            adjustments: {
-              ...defaults,
-              ...p.adjustments,
-              hsl: { ...defaultHsl, ...p.adjustments?.hsl },
-              bwMix: { ...defaultBw, ...p.adjustments?.bwMix },
-              curves: { ...defaultCurves, ...p.adjustments?.curves },
-            },
-            url: URL.createObjectURL(p.blob),
-            previewUrl: p.previewBlob
-              ? URL.createObjectURL(p.previewBlob)
-              : URL.createObjectURL(p.blob),
-          }));
+        const runtime = await Promise.all(
+          records
+            .sort((a, b) => b.createdAt - a.createdAt)
+            .map(async (p) => {
+              let original = p.blob;
+              let missing = p.missing ?? false;
+              if (p.importMethod === "add" && p.sourceHandle) {
+                try {
+                  const permission = await p.sourceHandle.queryPermission?.({
+                    mode: "read",
+                  });
+                  if (permission === "granted")
+                    original = await p.sourceHandle.getFile();
+                  else missing = true;
+                } catch {
+                  missing = true;
+                }
+              }
+              const display =
+                p.displayBlob ?? (original.size ? original : p.previewBlob);
+              if (!display) missing = true;
+              return {
+                ...p,
+                blob: original,
+                importMethod: p.importMethod ?? "copy",
+                sourceHandle: p.sourceHandle ?? null,
+                editedAt: p.editedAt ?? p.createdAt,
+                folder: p.folder ?? "Local library",
+                virtualOf: p.virtualOf ?? null,
+                rejected: p.rejected ?? false,
+                retouchSpots: p.retouchSpots ?? [],
+                perceptualHash: p.perceptualHash ?? "",
+                cull: p.cull ?? {
+                  focus: 0,
+                  exposure: 0,
+                  faces: 0,
+                  similarity: 0,
+                },
+                stackId: p.stackId ?? null,
+                missing,
+                processVersion: p.processVersion ?? "2026",
+                previewBlob: p.previewBlob ?? null,
+                displayBlob: p.displayBlob ?? null,
+                sourceBitDepth: p.sourceBitDepth ?? 8,
+                rawInfo: p.rawInfo ?? null,
+                aiHistory: p.aiHistory ?? [],
+                peopleCluster: p.peopleCluster ?? "",
+                snapshots: p.snapshots ?? [],
+                masks: (p.masks ?? []).map((mask) => ({
+                  ...mask,
+                  visible: mask.visible ?? true,
+                  inverted: mask.inverted ?? false,
+                  overlayColor: mask.overlayColor ?? "#b6f36b",
+                  overlayOpacity: mask.overlayOpacity ?? 48,
+                  pinX: mask.pinX ?? 0.5,
+                  pinY: mask.pinY ?? 0.5,
+                  adjustments: { ...defaultLocal, ...mask.adjustments },
+                })),
+                metadata: { ...emptyMetadata, ...p.metadata },
+                adjustments: {
+                  ...defaults,
+                  ...p.adjustments,
+                  hsl: { ...defaultHsl, ...p.adjustments?.hsl },
+                  bwMix: { ...defaultBw, ...p.adjustments?.bwMix },
+                  curves: { ...defaultCurves, ...p.adjustments?.curves },
+                },
+                url: URL.createObjectURL(display ?? new Blob()),
+                previewUrl: p.previewBlob
+                  ? URL.createObjectURL(p.previewBlob)
+                  : URL.createObjectURL(display ?? new Blob()),
+              };
+            }),
+        );
         setPhotos(runtime);
         const remembered = localStorage.getItem("librelux-selected-photo");
         const initial = runtime.find((p) => p.id === remembered) ?? runtime[0];
@@ -1991,6 +2116,7 @@ export default function Home() {
         organization: "source" | "date" | "custom";
         destination: string;
         duplicates: "skip" | "copy";
+        method?: ImportMethod;
       }>("import-preset"),
       readSetting<{
         highContrast?: boolean;
@@ -2001,6 +2127,11 @@ export default function Home() {
         showFilmstrip?: boolean;
         gridSize?: number;
       }>("ui-preferences"),
+      readSetting<{
+        order: string[];
+        hidden: string[];
+        solo: boolean;
+      }>("panel-workspace"),
     ])
       .then(
         ([
@@ -2011,6 +2142,7 @@ export default function Home() {
           savedOpticsProfiles,
           importPreset,
           prefs,
+          panelWorkspace,
         ]) => {
           if (savedAlbums)
             setAlbums(
@@ -2030,7 +2162,13 @@ export default function Home() {
                   !builtInExportRecipes.some((item) => item.id === recipe.id),
               ),
             ]);
-          if (savedPresets) setUserPresets(savedPresets);
+          if (savedPresets)
+            setUserPresets(
+              savedPresets.map((preset) => ({
+                ...preset,
+                favorite: Boolean(preset.favorite),
+              })),
+            );
           if (savedShortcuts)
             setShortcutMap((current) => ({ ...current, ...savedShortcuts }));
           if (savedOpticsProfiles)
@@ -2047,6 +2185,7 @@ export default function Home() {
             setImportOrganization(importPreset.organization);
             setImportDestination(importPreset.destination);
             setDuplicateImport(importPreset.duplicates);
+            setImportMethod(importPreset.method ?? "copy");
           }
           if (prefs) {
             setHighContrast(Boolean(prefs.highContrast));
@@ -2056,6 +2195,11 @@ export default function Home() {
             setLearningTips(prefs.learningTips !== false);
             setShowFilmstrip(prefs.showFilmstrip !== false);
             setGridSize(prefs.gridSize ?? 155);
+          }
+          if (panelWorkspace) {
+            setPanelOrder(panelWorkspace.order ?? defaultPanelOrder);
+            setHiddenPanels(panelWorkspace.hidden ?? []);
+            setSoloPanels(Boolean(panelWorkspace.solo));
           }
         },
       )
@@ -2155,11 +2299,16 @@ export default function Home() {
     [selected, updateSelected],
   );
   const importFiles = useCallback(
-    async (fileList: FileList | File[]) => {
+    async (
+      fileList: FileList | File[],
+      sourceHandles = new Map<File, StoredFileHandle>(),
+    ) => {
       const files = Array.from(fileList).filter(
         (file) =>
           (file.type.startsWith("image/") ||
-            /\.(heic|heif)$/i.test(file.name)) &&
+            /\.(heic|heif)$/i.test(file.name) ||
+            isRawFile(file) ||
+            isTiffFile(file)) &&
           (duplicateImport === "copy" ||
             !photos.some(
               (photo) => photo.name === file.name && photo.size === file.size,
@@ -2214,8 +2363,23 @@ export default function Home() {
               return null;
             }
           }
+          let decoded;
+          try {
+            decoded = await decodeEditableSource(file);
+          } catch (error) {
+            setCatalogStatus(
+              `Could not decode ${sourceFile.name}: ${error instanceof Error ? error.message : "unsupported source"}`,
+            );
+            setProgressJobs((current) =>
+              current.map((job) =>
+                job.id === jobId ? { ...job, status: "failed" } : job,
+              ),
+            );
+            return null;
+          }
+          const displayFile = decoded.displayFile;
           const relative =
-            (file as File & { webkitRelativePath?: string })
+            (sourceFile as File & { webkitRelativePath?: string })
               .webkitRelativePath ?? "";
           const now = Date.now();
           let parsed: Record<string, unknown> = {};
@@ -2232,11 +2396,11 @@ export default function Home() {
             parsed = {};
           }
           const [analysis, previewBlob] = await Promise.all([
-            analyzeImportFile(file).catch(() => ({
+            analyzeImportFile(displayFile).catch(() => ({
               perceptualHash: "",
               cull: { focus: 0, exposure: 0, faces: 0, similarity: 0 },
             })),
-            createSmartPreview(file),
+            createSmartPreview(displayFile),
           ]);
           setProgressJobs((current) =>
             current.map((job) =>
@@ -2259,11 +2423,32 @@ export default function Home() {
               : parsed.CreateDate instanceof Date
                 ? parsed.CreateDate.toISOString()
                 : "";
+          const identifiedCamera = [
+            parsed.Make ?? decoded.rawInfo?.cameraMake,
+            parsed.Model ?? decoded.rawInfo?.cameraModel,
+          ]
+            .filter(Boolean)
+            .map(String)
+            .join(" ");
+          const identifiedLens = String(
+            parsed.LensModel ?? parsed.Lens ?? decoded.rawInfo?.lens ?? "",
+          );
+          const automaticProfile = opticsProfiles.find(
+            (profile) =>
+              (!profile.camera ||
+                identifiedCamera
+                  .toLowerCase()
+                  .includes(profile.camera.toLowerCase())) &&
+              (!profile.lens ||
+                identifiedLens
+                  .toLowerCase()
+                  .includes(profile.lens.toLowerCase())),
+          );
           const record: PhotoRecord = {
             id: crypto.randomUUID(),
-            name: file.name,
-            type: file.type,
-            size: file.size,
+            name: sourceFile.name,
+            type: sourceFile.type || file.type || "application/octet-stream",
+            size: sourceFile.size,
             createdAt: now,
             editedAt: now,
             rating: 0,
@@ -2278,9 +2463,10 @@ export default function Home() {
                   : relative.split("/").slice(0, -1).join("/") ||
                     "Local library",
             virtualOf: null,
-            blob: file,
+            blob: sourceFile,
             adjustments: {
               ...defaults,
+              ...(automaticProfile?.settings ?? {}),
               hsl: { ...defaultHsl },
               bwMix: { ...defaultBw },
               curves: { ...defaultCurves },
@@ -2301,16 +2487,21 @@ export default function Home() {
                 parsed.Copyright ?? parsed.CopyrightNotice ?? "",
               ),
               keywords,
-              camera: [parsed.Make, parsed.Model]
-                .filter(Boolean)
-                .map(String)
-                .join(" "),
-              lens: String(parsed.LensModel ?? parsed.Lens ?? ""),
-              capturedAt: captured,
-              iso: parsed.ISO ? String(parsed.ISO) : "",
-              aperture: parsed.FNumber ? `f/${parsed.FNumber}` : "",
-              shutter: parsed.ExposureTime ? String(parsed.ExposureTime) : "",
-              focalLength: parsed.FocalLength ? `${parsed.FocalLength} mm` : "",
+              camera: identifiedCamera,
+              lens: identifiedLens,
+              capturedAt: captured || decoded.rawInfo?.capturedAt || "",
+              iso: String(parsed.ISO ?? decoded.rawInfo?.iso ?? ""),
+              aperture:
+                parsed.FNumber || decoded.rawInfo?.aperture
+                  ? `f/${parsed.FNumber ?? decoded.rawInfo?.aperture}`
+                  : "",
+              shutter: String(
+                parsed.ExposureTime ?? decoded.rawInfo?.shutter ?? "",
+              ),
+              focalLength:
+                parsed.FocalLength || decoded.rawInfo?.focalLength
+                  ? `${parsed.FocalLength ?? decoded.rawInfo?.focalLength} mm`
+                  : "",
               latitude:
                 typeof parsed.latitude === "number" ? parsed.latitude : null,
               longitude:
@@ -2324,13 +2515,29 @@ export default function Home() {
             missing: false,
             processVersion: "2026",
             previewBlob,
+            displayBlob:
+              displayFile === sourceFile ? null : (displayFile as Blob),
+            sourceBitDepth: decoded.sourceBitDepth,
+            rawInfo: decoded.rawInfo,
             aiHistory: [],
             peopleCluster:
               analysis.cull.faces > 0
                 ? `Person ${analysis.perceptualHash.slice(0, 4).toUpperCase()}`
                 : "",
+            snapshots: [],
+            importMethod,
+            sourceHandle:
+              importMethod === "add"
+                ? (sourceHandles.get(sourceFile) ?? null)
+                : null,
           };
-          void savePhoto(record);
+          await savePhoto(record);
+          if (importMethod === "move") {
+            const handle = sourceHandles.get(sourceFile);
+            if (handle?.remove) {
+              await handle.remove().catch(() => undefined);
+            }
+          }
           setProgressJobs((current) =>
             current.map((job) =>
               job.id === jobId
@@ -2340,10 +2547,10 @@ export default function Home() {
           );
           return {
             ...record,
-            url: URL.createObjectURL(file),
+            url: URL.createObjectURL(displayFile),
             previewUrl: previewBlob
               ? URL.createObjectURL(previewBlob)
-              : URL.createObjectURL(file),
+              : URL.createObjectURL(displayFile),
           };
         }),
       );
@@ -2356,7 +2563,14 @@ export default function Home() {
         setWorkspace("develop");
       }
     },
-    [duplicateImport, importDestination, importOrganization, photos],
+    [
+      duplicateImport,
+      importDestination,
+      importOrganization,
+      importMethod,
+      opticsProfiles,
+      photos,
+    ],
   );
   const chooseWatchDirectory = useCallback(async () => {
     if (!window.showDirectoryPicker) {
@@ -2590,7 +2804,7 @@ export default function Home() {
     }, "image/png");
   };
   const exportLocalLayout = useCallback(
-    async (kind: "gallery" | "book") => {
+    async (kind: "gallery" | "book", share = false) => {
       const targets = photos.filter((photo) =>
         (selectedIds.length
           ? selectedIds
@@ -2603,7 +2817,9 @@ export default function Home() {
             new Promise<string>((resolve) => {
               const reader = new FileReader();
               reader.onload = () => resolve(String(reader.result));
-              reader.readAsDataURL(photo.previewBlob ?? photo.blob);
+              reader.readAsDataURL(
+                photo.previewBlob ?? photo.displayBlob ?? photo.blob,
+              );
             }),
         ),
       );
@@ -2614,7 +2830,19 @@ export default function Home() {
         )
         .join("");
       const html = `<!doctype html><meta charset="utf-8"><title>LibreLux ${kind}</title><style>body{font:16px system-ui;margin:0;padding:32px;background:#111;color:#eee}main{display:grid;grid-template-columns:${kind === "book" ? "1fr" : "repeat(auto-fit,minmax(260px,1fr))"};gap:24px;max-width:1200px;margin:auto}figure{margin:0;${kind === "book" ? "page-break-after:always;min-height:90vh;display:grid;place-items:center" : ""}}img{max-width:100%;max-height:82vh;display:block;margin:auto}figcaption{text-align:center;margin-top:10px}</style><main>${items}</main>`;
-      const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+      const blob = new Blob([html], { type: "text/html" });
+      const file = new File([blob], `LibreLux-${kind}.html`, {
+        type: "text/html",
+      });
+      if (share && navigator.share && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          title: `LibreLux ${kind}`,
+          text: "Private photo review from LibreLux",
+          files: [file],
+        });
+        return;
+      }
+      const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `LibreLux-${kind}.html`;
@@ -2862,6 +3090,207 @@ export default function Home() {
       `Merged ${targets.length} frames with overlap and edge fill`,
     );
   };
+  const loadSelectedMergeFrames = async () => {
+    const targets = photos.filter((photo) => selectedIds.includes(photo.id));
+    if (targets.length < 2)
+      throw new Error("Select at least two source frames");
+    const images = await Promise.all(
+      targets.map(async (photo) => {
+        const image = new Image();
+        image.src = photo.url;
+        await image.decode();
+        return image;
+      }),
+    );
+    const width = Math.min(...images.map((image) => image.naturalWidth));
+    const height = Math.min(...images.map((image) => image.naturalHeight));
+    const frames = images.map((image) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("Canvas unavailable");
+      context.drawImage(
+        image,
+        (image.naturalWidth - width) / 2,
+        (image.naturalHeight - height) / 2,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+      );
+      return context.getImageData(0, 0, width, height);
+    });
+    return { targets, frames, width, height };
+  };
+  const importMergedPixels = async (
+    pixels: ImageData,
+    prefix: string,
+    message: string,
+  ) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = pixels.width;
+    canvas.height = pixels.height;
+    canvas.getContext("2d")?.putImageData(pixels, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    if (!blob) throw new Error("Merge encoding failed");
+    await importFiles([
+      new File([blob], `${prefix}-${Date.now()}.png`, { type: "image/png" }),
+    ]);
+    setCatalogStatus(message);
+  };
+  const mergeSelectedFocusStack = async () => {
+    try {
+      const { targets, frames, width, height } =
+        await loadSelectedMergeFrames();
+      const output = new ImageData(width, height);
+      output.data.set(frames[0].data);
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          const pixel = y * width + x;
+          let bestFrame = 0;
+          let bestSharpness = -1;
+          frames.forEach((frame, frameIndex) => {
+            const offset = pixel * 4;
+            let sharpness = 0;
+            for (let channel = 0; channel < 3; channel++) {
+              const center = frame.data[offset + channel] * 4;
+              const neighbors =
+                frame.data[offset - 4 + channel] +
+                frame.data[offset + 4 + channel] +
+                frame.data[offset - width * 4 + channel] +
+                frame.data[offset + width * 4 + channel];
+              sharpness += Math.abs(center - neighbors);
+            }
+            if (sharpness > bestSharpness) {
+              bestSharpness = sharpness;
+              bestFrame = frameIndex;
+            }
+          });
+          const offset = pixel * 4;
+          output.data.set(
+            frames[bestFrame].data.slice(offset, offset + 4),
+            offset,
+          );
+        }
+      }
+      await importMergedPixels(
+        output,
+        "Focus-Stack",
+        `Focus-stacked ${targets.length} aligned frames`,
+      );
+    } catch (error) {
+      setCatalogStatus(
+        error instanceof Error ? error.message : "Focus stack failed",
+      );
+    }
+  };
+  const mergeSelectedMultiFrame = async () => {
+    try {
+      const { targets, frames, width, height } =
+        await loadSelectedMergeFrames();
+      const output = new ImageData(width, height);
+      for (let offset = 0; offset < output.data.length; offset += 4) {
+        for (let channel = 0; channel < 3; channel++) {
+          const values = frames
+            .map((frame) => frame.data[offset + channel])
+            .sort((a, b) => a - b);
+          const middle = Math.floor(values.length / 2);
+          output.data[offset + channel] =
+            values.length % 2
+              ? values[middle]
+              : Math.round((values[middle - 1] + values[middle]) / 2);
+        }
+        output.data[offset + 3] = 255;
+      }
+      await importMergedPixels(
+        output,
+        "Multi-Frame-Clean",
+        `Combined ${targets.length} frames for pixel-shift noise reduction`,
+      );
+    } catch (error) {
+      setCatalogStatus(
+        error instanceof Error ? error.message : "Multi-frame merge failed",
+      );
+    }
+  };
+  const mergeSelectedHdrPanorama = async () => {
+    const targets = photos.filter((photo) => selectedIds.includes(photo.id));
+    if (targets.length < 3) {
+      setCatalogStatus("Select at least three bracketed panorama frames");
+      return;
+    }
+    try {
+      const images = await Promise.all(
+        targets.map(async (photo) => {
+          const image = new Image();
+          image.src = photo.url;
+          await image.decode();
+          return image;
+        }),
+      );
+      const height = Math.min(...images.map((image) => image.naturalHeight));
+      const widths = images.map((image) =>
+        Math.round((image.naturalWidth / image.naturalHeight) * height),
+      );
+      const overlap = Math.round(Math.min(...widths) * 0.22);
+      const canvas = document.createElement("canvas");
+      canvas.width =
+        widths.reduce((sum, width) => sum + width, 0) -
+        overlap * (images.length - 1);
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Canvas unavailable");
+      let x = 0;
+      images.forEach((image, index) => {
+        const width = widths[index];
+        const gradient = context.createLinearGradient(x, 0, x + width, 0);
+        gradient.addColorStop(0, index ? "rgba(255,255,255,0)" : "white");
+        gradient.addColorStop(index ? 0.18 : 0, "white");
+        gradient.addColorStop(index < images.length - 1 ? 0.82 : 1, "white");
+        gradient.addColorStop(
+          1,
+          index < images.length - 1 ? "rgba(255,255,255,0)" : "white",
+        );
+        const layer = document.createElement("canvas");
+        layer.width = canvas.width;
+        layer.height = height;
+        const layerContext = layer.getContext("2d");
+        if (!layerContext) return;
+        layerContext.filter = `brightness(${Math.max(0.72, Math.min(1.35, 1 + (index - (images.length - 1) / 2) * -0.08))})`;
+        layerContext.drawImage(image, x, 0, width, height);
+        layerContext.globalCompositeOperation = "destination-in";
+        layerContext.fillStyle = gradient;
+        layerContext.fillRect(x, 0, width, height);
+        context.globalCompositeOperation = "screen";
+        context.globalAlpha = index ? 0.72 : 1;
+        context.drawImage(layer, 0, 0);
+        x += width - overlap;
+      });
+      context.globalCompositeOperation = "source-over";
+      context.globalAlpha = 1;
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/png"),
+      );
+      if (!blob) throw new Error("HDR panorama encoding failed");
+      await importFiles([
+        new File([blob], `HDR-Panorama-${Date.now()}.png`, {
+          type: "image/png",
+        }),
+      ]);
+      setCatalogStatus(
+        `Merged ${targets.length} exposure-aware panorama frames`,
+      );
+    } catch (error) {
+      setCatalogStatus(
+        error instanceof Error ? error.message : "HDR panorama failed",
+      );
+    }
+  };
   const createVirtualCopy = () => {
     if (!selected) return;
     const id = crypto.randomUUID();
@@ -2872,7 +3301,7 @@ export default function Home() {
       createdAt: Date.now(),
       editedAt: Date.now(),
       virtualOf: selected.virtualOf ?? selected.id,
-      url: URL.createObjectURL(selected.blob),
+      url: URL.createObjectURL(selected.displayBlob ?? selected.blob),
       adjustments: {
         ...selected.adjustments,
         hsl: { ...selected.adjustments.hsl },
@@ -2900,26 +3329,44 @@ export default function Home() {
   };
   const exportCatalog = () => {
     const records = photos.map(
-      ({ url, previewUrl, blob, previewBlob, ...photo }) => {
+      ({
+        url,
+        previewUrl,
+        blob,
+        previewBlob,
+        displayBlob,
+        sourceHandle,
+        ...photo
+      }) => {
         void url;
         void previewUrl;
         void previewBlob;
+        void sourceHandle;
         return {
           ...photo,
           original: { name: photo.name, size: blob.size, type: photo.type },
+          display: displayBlob
+            ? { size: displayBlob.size, type: displayBlob.type }
+            : null,
         };
       },
     );
     const header = new TextEncoder().encode(
       JSON.stringify({
         format: "LibreLux Catalog",
-        version: 2,
+        version: 3,
         createdAt: new Date().toISOString(),
         records,
       }),
     );
     const data = new Blob(
-      [header, new Uint8Array([10]), ...photos.map((photo) => photo.blob)],
+      [
+        header,
+        new Uint8Array([10]),
+        ...photos.flatMap((photo) =>
+          photo.displayBlob ? [photo.blob, photo.displayBlob] : [photo.blob],
+        ),
+      ],
       { type: "application/x-librelux-catalog" },
     );
     const url = URL.createObjectURL(data);
@@ -2943,10 +3390,14 @@ export default function Home() {
         records: Array<
           Omit<PhotoRecord, "blob"> & {
             original: { name: string; size: number; type: string };
+            display?: { size: number; type: string } | null;
           }
         >;
       };
-      if (manifest.format !== "LibreLux Catalog" || manifest.version !== 2)
+      if (
+        manifest.format !== "LibreLux Catalog" ||
+        ![2, 3].includes(manifest.version)
+      )
         throw new Error("Unsupported catalog");
       let offset = newline + 1;
       const restored: RuntimePhoto[] = [];
@@ -2958,14 +3409,28 @@ export default function Home() {
           type: record.original.type,
         });
         offset += size;
-        const { original: _original, ...photo } = record;
+        const displaySize = record.display?.size ?? 0;
+        const displayBlob = displaySize
+          ? new Blob([bytes.slice(offset, offset + displaySize)], {
+              type: record.display?.type,
+            })
+          : null;
+        offset += displaySize;
+        const { original: _original, display: _display, ...photo } = record;
         void _original;
+        void _display;
         const runtime = {
           ...photo,
           blob,
-          url: URL.createObjectURL(blob),
+          displayBlob,
+          sourceBitDepth: photo.sourceBitDepth ?? 8,
+          rawInfo: photo.rawInfo ?? null,
+          importMethod: photo.importMethod ?? "copy",
+          sourceHandle: null,
+          snapshots: photo.snapshots ?? [],
+          url: URL.createObjectURL(displayBlob ?? blob),
           previewBlob: null,
-          previewUrl: URL.createObjectURL(blob),
+          previewUrl: URL.createObjectURL(displayBlob ?? blob),
           missing: false,
         } as RuntimePhoto;
         await savePhoto(runtime);
@@ -3023,16 +3488,17 @@ export default function Home() {
     setUserPresets(next);
     void saveSetting("user-presets", next);
   };
-  const createUserPreset = () => {
+  const createUserPreset = (group = "My presets") => {
     if (!selected) return;
     persistUserPresets([
       ...userPresets,
       {
         id: crypto.randomUUID(),
         name: `Custom ${userPresets.length + 1}`,
-        group: "My presets",
+        group,
         settings: { ...selected.adjustments },
         createdAt: Date.now(),
+        favorite: false,
       },
     ]);
   };
@@ -3095,6 +3561,7 @@ export default function Home() {
             group: "Camera Raw imports",
             settings,
             createdAt: Date.now(),
+            favorite: false,
           },
         ]);
         return;
@@ -3117,6 +3584,7 @@ export default function Home() {
             group: String(preset.group ?? "Imported"),
             settings,
             createdAt: Date.now(),
+            favorite: Boolean(preset.favorite),
           };
         })
         .filter((preset) => Object.keys(preset.settings).length);
@@ -3174,6 +3642,7 @@ export default function Home() {
         group: "Imported LUTs",
         settings,
         createdAt: Date.now(),
+        favorite: false,
       },
     ]);
     choosePreset(`lut-${file.name}`, file.name, settings);
@@ -3495,29 +3964,153 @@ export default function Home() {
     if (patch.gridSize !== undefined) setGridSize(patch.gridSize);
     void saveSetting("ui-preferences", next);
   };
+  const savePanelWorkspace = (
+    nextOrder = panelOrder,
+    nextHidden = hiddenPanels,
+    nextSolo = soloPanels,
+  ) => {
+    setPanelOrder(nextOrder);
+    setHiddenPanels(nextHidden);
+    setSoloPanels(nextSolo);
+    void saveSetting("panel-workspace", {
+      order: nextOrder,
+      hidden: nextHidden,
+      solo: nextSolo,
+    });
+  };
+  const movePanel = (title: string, direction: -1 | 1) => {
+    const index = panelOrder.indexOf(title);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= panelOrder.length) return;
+    const next = [...panelOrder];
+    [next[index], next[target]] = [next[target], next[index]];
+    savePanelWorkspace(next);
+  };
+  const saveWorkspaceLayoutPreset = () =>
+    void saveSetting("workspace-layout-preset", {
+      showLeft,
+      showRight,
+      showFilmstrip,
+      compactUi,
+      panelOrder,
+      hiddenPanels,
+      soloPanels,
+    }).then(() => setCatalogStatus("Workspace preset saved on this device"));
+  const loadWorkspaceLayoutPreset = async () => {
+    const preset = await readSetting<{
+      showLeft: boolean;
+      showRight: boolean;
+      showFilmstrip: boolean;
+      compactUi: boolean;
+      panelOrder: string[];
+      hiddenPanels: string[];
+      soloPanels: boolean;
+    }>("workspace-layout-preset");
+    if (!preset) {
+      setCatalogStatus("No saved workspace preset yet");
+      return;
+    }
+    setShowLeft(preset.showLeft);
+    setShowRight(preset.showRight);
+    setShowFilmstrip(preset.showFilmstrip);
+    setCompactUi(preset.compactUi);
+    savePanelWorkspace(
+      preset.panelOrder,
+      preset.hiddenPanels,
+      preset.soloPanels,
+    );
+    setCatalogStatus("Workspace preset restored");
+  };
   const updateImportPreset = (
     patch: Partial<{
       organization: "source" | "date" | "custom";
       destination: string;
       duplicates: "skip" | "copy";
+      method: ImportMethod;
     }>,
   ) => {
     const next = {
       organization: importOrganization,
       destination: importDestination,
       duplicates: duplicateImport,
+      method: importMethod,
       ...patch,
     };
     if (patch.organization) setImportOrganization(patch.organization);
     if (patch.destination !== undefined)
       setImportDestination(patch.destination);
     if (patch.duplicates) setDuplicateImport(patch.duplicates);
+    if (patch.method) setImportMethod(patch.method);
     void saveSetting("import-preset", next);
   };
   const addMask = (mask: MaskRecord) => {
     updateSelected((photo) => ({ ...photo, masks: [...photo.masks, mask] }));
     setSelectedMaskId(mask.id);
     setMaskTarget(null);
+  };
+  const saveDevelopSnapshot = () => {
+    if (!selected) return;
+    updateSelected((photo) => ({
+      ...photo,
+      snapshots: [
+        ...photo.snapshots,
+        {
+          id: crypto.randomUUID(),
+          name: `Snapshot ${photo.snapshots.length + 1}`,
+          createdAt: Date.now(),
+          adjustments: structuredClone(photo.adjustments),
+        },
+      ],
+    }));
+  };
+  const applyDevelopSnapshot = (snapshot: DevelopSnapshot) => {
+    if (!selected) return;
+    setHistory((current) => [...current.slice(-29), selected.adjustments]);
+    updateSelected((photo) => ({
+      ...photo,
+      adjustments: structuredClone(snapshot.adjustments),
+    }));
+  };
+  const deleteDevelopSnapshot = (id: string) =>
+    updateSelected((photo) => ({
+      ...photo,
+      snapshots: photo.snapshots.filter((snapshot) => snapshot.id !== id),
+    }));
+  const saveSensorDustMap = async () => {
+    if (!selected) return;
+    const spots = selected.retouchSpots.filter(
+      (spot) => spot.mode === "heal" || spot.mode === "remove",
+    );
+    if (!spots.length) {
+      setCatalogStatus(
+        "Mark dust spots with Heal or Remove before learning a map",
+      );
+      return;
+    }
+    const camera = selected.metadata.camera || "generic-camera";
+    await saveSetting(`sensor-dust-map:${camera}`, spots);
+    setCatalogStatus(`Saved ${spots.length}-spot dust map for ${camera}`);
+  };
+  const applySensorDustMap = async () => {
+    if (!selected) return;
+    const camera = selected.metadata.camera || "generic-camera";
+    const spots = await readSetting<RetouchSpot[]>(`sensor-dust-map:${camera}`);
+    if (!spots?.length) {
+      setCatalogStatus(`No dust map saved for ${camera}`);
+      return;
+    }
+    updateSelected((photo) => ({
+      ...photo,
+      retouchSpots: [
+        ...photo.retouchSpots,
+        ...spots.map((spot) => ({ ...spot, id: crypto.randomUUID() })),
+      ],
+      adjustments: {
+        ...photo.adjustments,
+        dustRemoval: Math.max(35, photo.adjustments.dustRemoval),
+      },
+    }));
+    setCatalogStatus(`Applied ${spots.length}-spot dust map for ${camera}`);
   };
   const updateMask = (id: string, updater: (mask: MaskRecord) => MaskRecord) =>
     updateSelected((photo) => ({
@@ -3605,10 +4198,54 @@ export default function Home() {
     setFuture((f) => f.slice(1));
     updateSelected((p) => ({ ...p, adjustments: next }));
   }, [selected, future, updateSelected]);
-  const openPhotoPicker = useCallback(
-    () => document.getElementById("librelux-photo-import")?.click(),
-    [],
-  );
+  const openPhotoPicker = useCallback(async () => {
+    if (importMethod !== "copy" && window.showOpenFilePicker) {
+      try {
+        const handles = await window.showOpenFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: "Photos and camera RAW files",
+              accept: {
+                "image/*": [
+                  ".jpg",
+                  ".jpeg",
+                  ".png",
+                  ".webp",
+                  ".heic",
+                  ".heif",
+                  ".tif",
+                  ".tiff",
+                  ".dng",
+                  ".cr2",
+                  ".cr3",
+                  ".nef",
+                  ".arw",
+                  ".raf",
+                  ".orf",
+                  ".rw2",
+                ],
+              },
+            },
+          ],
+        });
+        const pairs = await Promise.all(
+          handles.map(
+            async (handle) => [await handle.getFile(), handle] as const,
+          ),
+        );
+        await importFiles(
+          pairs.map(([file]) => file),
+          new Map(pairs),
+        );
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError")
+          return;
+      }
+    }
+    document.getElementById("librelux-photo-import")?.click();
+  }, [importFiles, importMethod]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement)?.tagName;
@@ -4123,22 +4760,48 @@ export default function Home() {
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.restore();
     }
-    if (selected.adjustments.paperTexture > 0 || selected.adjustments.age > 0) {
+    if (
+      selected.adjustments.paperTexture > 0 ||
+      selected.adjustments.age > 0 ||
+      selected.adjustments.textureAsset > 0
+    ) {
       ctx.save();
       ctx.resetTransform();
       ctx.globalAlpha = Math.min(
         0.18,
-        (selected.adjustments.paperTexture + selected.adjustments.age) / 900,
+        (selected.adjustments.paperTexture +
+          selected.adjustments.age +
+          selected.adjustments.textureAsset * 8) /
+          900,
       );
       ctx.fillStyle = "#f1d7a6";
       for (let i = 0; i < 1200; i++) {
         const x = (i * 7919) % canvas.width;
         const y = (i * 104729) % canvas.height;
-        const s = 1 + (i % 3);
-        ctx.fillRect(x, y, s, s);
+        const s = 1 + ((i + selected.adjustments.textureAsset) % 4);
+        if (selected.adjustments.textureAsset === 2 && i % 9 === 0) {
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + 18 + (i % 31), y + 2);
+          ctx.strokeStyle = "#fff";
+          ctx.stroke();
+        } else ctx.fillRect(x, y, s, s);
       }
       ctx.restore();
     }
+    applyTiledDetail(ctx, canvas.width, canvas.height, {
+      deconvolution: selected.adjustments.deconvolution,
+      apertureCorrection: selected.adjustments.apertureCorrection,
+      cornerSharpness: selected.adjustments.cornerSharpness,
+      outputSharpen:
+        outputSharpen === "none" ? 0 : outputSharpen === "screen" ? 18 : 28,
+    });
+    applyDepthAwareLensBlur(
+      ctx,
+      canvas.width,
+      canvas.height,
+      selected.adjustments.lensBlur,
+    );
     applyComputationalCorrections(ctx, selected.adjustments);
     if (watermark.trim() || watermarkImage) {
       ctx.save();
@@ -4388,6 +5051,19 @@ export default function Home() {
         if (!context) throw new Error("Canvas unavailable");
         context.filter = cssFilter(photo.adjustments, photo.processVersion);
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        applyTiledDetail(context, canvas.width, canvas.height, {
+          deconvolution: photo.adjustments.deconvolution,
+          apertureCorrection: photo.adjustments.apertureCorrection,
+          cornerSharpness: photo.adjustments.cornerSharpness,
+          outputSharpen:
+            outputSharpen === "none" ? 0 : outputSharpen === "screen" ? 18 : 28,
+        });
+        applyDepthAwareLensBlur(
+          context,
+          canvas.width,
+          canvas.height,
+          photo.adjustments.lensBlur,
+        );
         applyComputationalCorrections(context, photo.adjustments);
         setProgressJobs((current) =>
           current.map((job) =>
@@ -4509,7 +5185,6 @@ export default function Home() {
       </a>
       <input
         id="librelux-photo-import"
-        ref={fileRef}
         type="file"
         accept="image/*,.dng,.raw,.cr2,.cr3,.nef,.arw,.orf,.rw2"
         multiple
@@ -4653,7 +5328,7 @@ export default function Home() {
           <div className="import-row">
             <button
               className="import-button"
-              onClick={() => fileRef.current?.click()}
+              onClick={() => void openPhotoPicker()}
             >
               <ImagePlus size={17} /> Photos
             </button>
@@ -4805,6 +5480,9 @@ export default function Home() {
             <button onClick={() => void exportLocalLayout("gallery")}>
               <Download /> Local web gallery
             </button>
+            <button onClick={() => void exportLocalLayout("gallery", true)}>
+              <ArrowDownToLine /> Share review gallery
+            </button>
             <button onClick={() => void exportLocalLayout("book")}>
               <BookOpen /> Photo-book layout
             </button>
@@ -4822,6 +5500,18 @@ export default function Home() {
             </button>
             <button onClick={() => void mergeSelectedPanorama()}>
               <Columns2 /> Panorama & edge fill
+            </button>
+            <button onClick={() => void mergeSelectedHdrPanorama()}>
+              <Sparkles /> HDR panorama
+            </button>
+            <button onClick={() => void mergeSelectedFocusStack()}>
+              <Columns2 /> Focus stack
+            </button>
+            <button onClick={() => void mergeSelectedMultiFrame()}>
+              <Grid3X3 /> Multi-frame clean
+            </button>
+            <button onClick={() => setVideoLabOpen(true)}>
+              <SlidersHorizontal /> Video lab
             </button>
           </nav>
           {catalogStatus && (
@@ -5174,11 +5864,11 @@ export default function Home() {
               proofProfile={proofProfile}
               gamutWarnings={gamutWarnings}
               allowFullResolution={
-                deviceMemory > 4 || selected.size < 40_000_000
+                selected.size < processingBudget.maxPixels * 2
               }
             />
           ) : (
-            <EmptyLibrary onImport={() => fileRef.current?.click()} />
+            <EmptyLibrary onImport={() => void openPhotoPicker()} />
           )}
           {workspace !== "library" && showFilmstrip && (
             <div className="filmstrip">
@@ -5197,7 +5887,7 @@ export default function Home() {
           <footer className="statusbar">
             <span>
               {selected
-                ? `${selected.name} · ${formatBytes(selected.size)} · ${deviceMemory <= 4 && selected.size >= 40_000_000 ? "Smart preview protects memory" : "Full preview"}`
+                ? `${selected.name} · ${formatBytes(selected.size)} · ${selected.size >= processingBudget.maxPixels * 2 ? `Smart preview · ${processingBudget.tileSize}px tiles` : `Full preview · ${processingBudget.budgetMb} MB budget`}`
                 : "No photo selected"}
             </span>
             <button
@@ -5242,145 +5932,164 @@ export default function Home() {
             </button>
           </div>
           {selected ? (
-            <div className="panel-scroll">
-              {workspace === "enhance" && (
-                <div
-                  className="optics-modes"
-                  role="tablist"
-                  aria-label="Optics tools"
-                >
-                  {(
-                    [
-                      ["pure", "Pure"],
-                      ["creative", "Creative"],
-                      ["film", "Film"],
-                    ] as const
-                  ).map(([value, label]) => (
-                    <button
-                      role="tab"
-                      aria-selected={opticsMode === value}
-                      className={opticsMode === value ? "active" : ""}
-                      key={value}
-                      onClick={() => setOpticsMode(value)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <Histogram
-                photo={selected}
-                showClipping={showClipping}
-                onToggleClipping={() => setShowClipping((value) => !value)}
-                onToneChange={(key, delta) =>
-                  setAdjustment(
-                    key,
-                    Math.max(
-                      -100,
-                      Math.min(100, selected.adjustments[key] + delta),
-                    ),
-                  )
-                }
-              />
-              {workspace === "library" ? (
-                <LibraryInspector
+            <PanelWorkspaceContext.Provider
+              value={{
+                order: panelOrder,
+                hidden: hiddenPanels,
+                solo: soloPanels,
+                active: activePanel,
+                setActive: setActivePanel,
+              }}
+            >
+              <div className="panel-scroll">
+                {workspace === "enhance" && (
+                  <div
+                    className="optics-modes"
+                    role="tablist"
+                    aria-label="Optics tools"
+                  >
+                    {(
+                      [
+                        ["pure", "Pure"],
+                        ["creative", "Creative"],
+                        ["film", "Film"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        role="tab"
+                        aria-selected={opticsMode === value}
+                        className={opticsMode === value ? "active" : ""}
+                        key={value}
+                        onClick={() => setOpticsMode(value)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <Histogram
                   photo={selected}
-                  update={updateSelected}
-                  remove={removeSelected}
-                />
-              ) : workspace === "develop" ? (
-                <DevelopPanels
-                  photo={selected}
-                  setAdjustment={setAdjustment}
-                  setHslAdjustment={setHslAdjustment}
-                  setBwAdjustment={setBwAdjustment}
-                  setCurveAdjustment={setCurveAdjustment}
-                  maskTarget={maskTarget}
-                  setMaskTarget={setMaskTarget}
-                  maskTolerance={maskTolerance}
-                  setMaskTolerance={setMaskTolerance}
-                  maskFeather={maskFeather}
-                  setMaskFeather={setMaskFeather}
-                  maskBrushSize={maskBrushSize}
-                  setMaskBrushSize={setMaskBrushSize}
-                  maskBrushFlow={maskBrushFlow}
-                  setMaskBrushFlow={setMaskBrushFlow}
-                  maskBrushDensity={maskBrushDensity}
-                  setMaskBrushDensity={setMaskBrushDensity}
-                  maskAuto={maskAuto}
-                  setMaskAuto={setMaskAuto}
-                  selectedMaskId={selectedMaskId}
-                  setSelectedMaskId={setSelectedMaskId}
-                  updateMask={updateMask}
-                  duplicateMask={duplicateMask}
-                  deleteMask={deleteMask}
-                  autoTone={autoTone}
-                  sampleMode={sampleMode}
-                  setSampleMode={setSampleMode}
-                  pointColor={pointColor}
-                  setPointColor={setPointColor}
-                  retouchMode={retouchMode}
-                  setRetouchMode={setRetouchMode}
-                  retouchSize={retouchSize}
-                  setRetouchSize={setRetouchSize}
-                  retouchFeather={retouchFeather}
-                  setRetouchFeather={setRetouchFeather}
-                  updateRetouchSpot={updateRetouchSpot}
-                  deleteRetouchSpot={deleteRetouchSpot}
-                  clearRetouchSpots={clearRetouchSpots}
-                  userPresets={userPresets}
-                  createUserPreset={createUserPreset}
-                  updateUserPreset={updateUserPreset}
-                  deleteUserPreset={deleteUserPreset}
-                  exportUserPresets={exportUserPresets}
-                  importUserPresets={() => presetImportRef.current?.click()}
-                  chooseUserPreset={(preset) =>
-                    choosePreset(
-                      `user-${preset.id}`,
-                      preset.name,
-                      preset.settings,
+                  showClipping={showClipping}
+                  onToggleClipping={() => setShowClipping((value) => !value)}
+                  onToneChange={(key, delta) =>
+                    setAdjustment(
+                      key,
+                      Math.max(
+                        -100,
+                        Math.min(100, selected.adjustments[key] + delta),
+                      ),
                     )
                   }
-                  applyPresetToSelection={applyPresetToSelection}
-                  applyAdaptivePreset={applyAdaptivePreset}
-                  softProof={softProof}
-                  setSoftProof={setSoftProof}
-                  proofProfile={proofProfile}
-                  setProofProfile={setProofProfile}
-                  gamutWarnings={gamutWarnings}
-                  setGamutWarnings={setGamutWarnings}
-                  recordAiOperation={recordAiOperation}
-                  importCreativeLut={() => lutImportRef.current?.click()}
                 />
-              ) : opticsMode === "pure" ? (
-                <PurePanels
-                  photo={selected}
-                  setAdjustment={setAdjustment}
-                  selectedPreset={selectedPreset}
-                  choosePreset={choosePreset}
-                  autoEnhance={autoEnhance}
-                  opticsProfiles={opticsProfiles}
-                  importOpticsProfiles={() => opticsProfileRef.current?.click()}
-                  exportOpticsProfiles={exportOpticsProfiles}
-                />
-              ) : opticsMode === "creative" ? (
-                <CreativePanels
-                  photo={selected}
-                  setAdjustment={setAdjustment}
-                  applyPreset={applyPreset}
-                  selectedPreset={selectedPreset}
-                  choosePreset={choosePreset}
-                />
-              ) : (
-                <FilmPanels
-                  photo={selected}
-                  setAdjustment={setAdjustment}
-                  applyPreset={applyPreset}
-                  selectedPreset={selectedPreset}
-                  choosePreset={choosePreset}
-                />
-              )}
-            </div>
+                {workspace === "library" ? (
+                  <LibraryInspector
+                    photo={selected}
+                    update={updateSelected}
+                    remove={removeSelected}
+                  />
+                ) : workspace === "develop" ? (
+                  <DevelopPanels
+                    photo={selected}
+                    setAdjustment={setAdjustment}
+                    setHslAdjustment={setHslAdjustment}
+                    setBwAdjustment={setBwAdjustment}
+                    setCurveAdjustment={setCurveAdjustment}
+                    maskTarget={maskTarget}
+                    setMaskTarget={setMaskTarget}
+                    maskTolerance={maskTolerance}
+                    setMaskTolerance={setMaskTolerance}
+                    maskFeather={maskFeather}
+                    setMaskFeather={setMaskFeather}
+                    maskBrushSize={maskBrushSize}
+                    setMaskBrushSize={setMaskBrushSize}
+                    maskBrushFlow={maskBrushFlow}
+                    setMaskBrushFlow={setMaskBrushFlow}
+                    maskBrushDensity={maskBrushDensity}
+                    setMaskBrushDensity={setMaskBrushDensity}
+                    maskAuto={maskAuto}
+                    setMaskAuto={setMaskAuto}
+                    selectedMaskId={selectedMaskId}
+                    setSelectedMaskId={setSelectedMaskId}
+                    updateMask={updateMask}
+                    duplicateMask={duplicateMask}
+                    deleteMask={deleteMask}
+                    autoTone={autoTone}
+                    sampleMode={sampleMode}
+                    setSampleMode={setSampleMode}
+                    pointColor={pointColor}
+                    setPointColor={setPointColor}
+                    retouchMode={retouchMode}
+                    setRetouchMode={setRetouchMode}
+                    retouchSize={retouchSize}
+                    setRetouchSize={setRetouchSize}
+                    retouchFeather={retouchFeather}
+                    setRetouchFeather={setRetouchFeather}
+                    updateRetouchSpot={updateRetouchSpot}
+                    deleteRetouchSpot={deleteRetouchSpot}
+                    clearRetouchSpots={clearRetouchSpots}
+                    userPresets={userPresets}
+                    createUserPreset={createUserPreset}
+                    updateUserPreset={updateUserPreset}
+                    deleteUserPreset={deleteUserPreset}
+                    exportUserPresets={exportUserPresets}
+                    importUserPresets={() => presetImportRef.current?.click()}
+                    chooseUserPreset={(preset) =>
+                      choosePreset(
+                        `user-${preset.id}`,
+                        preset.name,
+                        preset.settings,
+                      )
+                    }
+                    applyPresetToSelection={applyPresetToSelection}
+                    applyAdaptivePreset={applyAdaptivePreset}
+                    softProof={softProof}
+                    setSoftProof={setSoftProof}
+                    proofProfile={proofProfile}
+                    setProofProfile={setProofProfile}
+                    gamutWarnings={gamutWarnings}
+                    setGamutWarnings={setGamutWarnings}
+                    recordAiOperation={recordAiOperation}
+                    importCreativeLut={() => lutImportRef.current?.click()}
+                    saveSnapshot={saveDevelopSnapshot}
+                    applySnapshot={applyDevelopSnapshot}
+                    deleteSnapshot={deleteDevelopSnapshot}
+                  />
+                ) : opticsMode === "pure" ? (
+                  <PurePanels
+                    photo={selected}
+                    setAdjustment={setAdjustment}
+                    selectedPreset={selectedPreset}
+                    choosePreset={choosePreset}
+                    autoEnhance={autoEnhance}
+                    opticsProfiles={opticsProfiles}
+                    importOpticsProfiles={() =>
+                      opticsProfileRef.current?.click()
+                    }
+                    exportOpticsProfiles={exportOpticsProfiles}
+                    saveSensorDustMap={saveSensorDustMap}
+                    applySensorDustMap={applySensorDustMap}
+                  />
+                ) : opticsMode === "creative" ? (
+                  <CreativePanels
+                    photo={selected}
+                    setAdjustment={setAdjustment}
+                    applyPreset={applyPreset}
+                    selectedPreset={selectedPreset}
+                    choosePreset={choosePreset}
+                  />
+                ) : (
+                  <FilmPanels
+                    photo={selected}
+                    setAdjustment={setAdjustment}
+                    applyPreset={applyPreset}
+                    selectedPreset={selectedPreset}
+                    choosePreset={choosePreset}
+                    createFilmProfile={() => createUserPreset("Film profiles")}
+                    exportFilmProfiles={exportUserPresets}
+                  />
+                )}
+              </div>
+            </PanelWorkspaceContext.Provider>
           ) : (
             <div className="no-selection">
               <Info />
@@ -5682,6 +6391,27 @@ export default function Home() {
             )}
             <label>
               <span>
+                <strong>Import method</strong>
+                <small>
+                  Add keeps originals in place; move removes the source when the
+                  browser permits it
+                </small>
+              </span>
+              <select
+                value={importMethod}
+                onChange={(event) =>
+                  updateImportPreset({
+                    method: event.target.value as ImportMethod,
+                  })
+                }
+              >
+                <option value="copy">Copy into local catalog</option>
+                <option value="add">Add in place</option>
+                <option value="move">Move into local catalog</option>
+              </select>
+            </label>
+            <label>
+              <span>
                 <strong>Duplicate imports</strong>
                 <small>Skip matches or create another copy</small>
               </span>
@@ -5697,6 +6427,62 @@ export default function Home() {
                 <option value="copy">Import another copy</option>
               </select>
             </label>
+            <section className="panel-workspace-editor">
+              <div>
+                <strong>Panel workspace</strong>
+                <small>
+                  Reorder tools, hide panels, or keep one open at a time
+                </small>
+              </div>
+              <button
+                aria-pressed={soloPanels}
+                onClick={() =>
+                  savePanelWorkspace(panelOrder, hiddenPanels, !soloPanels)
+                }
+              >
+                Solo mode {soloPanels ? "on" : "off"}
+              </button>
+              {panelOrder.map((title, index) => (
+                <div className="panel-order-row" key={title}>
+                  <button
+                    aria-pressed={!hiddenPanels.includes(title)}
+                    onClick={() =>
+                      savePanelWorkspace(
+                        panelOrder,
+                        hiddenPanels.includes(title)
+                          ? hiddenPanels.filter((item) => item !== title)
+                          : [...hiddenPanels, title],
+                      )
+                    }
+                  >
+                    {hiddenPanels.includes(title) ? "Show" : "Hide"}
+                  </button>
+                  <span>{title}</span>
+                  <button
+                    disabled={index === 0}
+                    onClick={() => movePanel(title, -1)}
+                    aria-label={`Move ${title} up`}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    disabled={index === panelOrder.length - 1}
+                    onClick={() => movePanel(title, 1)}
+                    aria-label={`Move ${title} down`}
+                  >
+                    ↓
+                  </button>
+                </div>
+              ))}
+              <div className="workspace-preset-actions">
+                <button onClick={saveWorkspaceLayoutPreset}>
+                  Save workspace
+                </button>
+                <button onClick={() => void loadWorkspaceLayoutPreset()}>
+                  Load workspace
+                </button>
+              </div>
+            </section>
           </div>
           <DialogFooter>
             <button
@@ -5858,6 +6644,7 @@ export default function Home() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <VideoLab open={videoLabOpen} onOpenChange={setVideoLabOpen} />
       <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
         <DialogContent className="shortcuts-dialog">
           <DialogHeader>
@@ -7024,6 +7811,36 @@ function EditorCanvas({
             255 * Math.max(0, Math.min(1, 1.18 - distance)),
           );
         }
+    } else if (maskTarget === "polygon") {
+      const points = Array.from({ length: 6 }, (_, index) => {
+        const angle = (Math.PI * 2 * index) / 6 - Math.PI / 2;
+        return [
+          normalizedX + Math.cos(angle) * 0.28,
+          normalizedY + Math.sin(angle) * 0.22,
+        ];
+      });
+      const insidePolygon = (px: number, py: number) => {
+        let inside = false;
+        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+          const [xi, yi] = points[i];
+          const [xj, yj] = points[j];
+          if (
+            yi > py !== yj > py &&
+            px < ((xj - xi) * (py - yi)) / Math.max(0.00001, yj - yi) + xi
+          )
+            inside = !inside;
+        }
+        return inside;
+      };
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++)
+          if (
+            insidePolygon(
+              x / Math.max(1, width - 1),
+              y / Math.max(1, height - 1),
+            )
+          )
+            writePixel(y * width + x);
     } else if (maskTarget === "depth") {
       for (let y = 0; y < height; y++)
         for (let x = 0; x < width; x++) {
@@ -7170,6 +7987,7 @@ function EditorCanvas({
       sky: "Sky",
       linear: "Linear gradient",
       radial: "Radial gradient",
+      polygon: "Polygon control mask",
       luminance: "Luminance range",
       color: "Color range",
       depth: "Depth range",
@@ -7337,11 +8155,28 @@ function EditorCanvas({
           style={{
             filter: showBefore
               ? "none"
-              : `${cssFilter(a, photo.processVersion)} ${softProof ? (proofProfile === "display-p3" ? "saturate(1.04)" : proofProfile === "adobe-rgb" ? "saturate(1.02) contrast(.99)" : proofProfile === "prophoto-rgb" ? "saturate(.97) contrast(.98)" : "") : ""}`,
+              : `${cssFilter(a, photo.processVersion)} ${softProof ? (proofProfile === "display-p3" ? "saturate(1.04)" : proofProfile === "adobe-rgb" ? "saturate(1.02) contrast(.99)" : proofProfile === "prophoto-rgb" ? "saturate(.97) contrast(.98)" : "") : ""} ${a.lensBlur > 0 ? `blur(${a.lensBlur}px)` : ""}`,
             transform: photoTransform,
             clipPath: `inset(${a.cropTop}% ${a.cropRight}% ${a.cropBottom}% ${a.cropLeft}%)`,
           }}
         />
+        {!showBefore && a.lensBlur > 0 && (
+          <img
+            className="depth-focus-preview"
+            src={renderSource}
+            alt=""
+            aria-hidden="true"
+            style={{
+              filter: cssFilter(a, photo.processVersion),
+              transform: photoTransform,
+              clipPath: `inset(${a.cropTop}% ${a.cropRight}% ${a.cropBottom}% ${a.cropLeft}%)`,
+              WebkitMaskImage:
+                "radial-gradient(ellipse 38% 52% at 50% 48%, #000 42%, transparent 100%)",
+              maskImage:
+                "radial-gradient(ellipse 38% 52% at 50% 48%, #000 42%, transparent 100%)",
+            }}
+          />
+        )}
         {!showBefore && a.dustRemoval > 0 && (
           <img
             className="dust-visualization"
@@ -8085,6 +8920,40 @@ function LibraryInspector({
             ? "The catalog record is intact, but its local original needs to be relinked."
             : "The locally stored original matches the catalog record."}
         </p>
+        {photo.rawInfo && (
+          <dl className="raw-details">
+            <div>
+              <dt>RAW engine</dt>
+              <dd>{photo.rawInfo.engine}</dd>
+            </div>
+            <div>
+              <dt>Sensor</dt>
+              <dd>
+                {photo.rawInfo.sensorPattern} · {photo.rawInfo.bitDepth}-bit
+              </dd>
+            </div>
+            <div>
+              <dt>Levels</dt>
+              <dd>
+                {photo.rawInfo.blackLevel}–{photo.rawInfo.whiteLevel}
+              </dd>
+            </div>
+            <div>
+              <dt>Camera matrix</dt>
+              <dd>
+                {photo.rawInfo.colorMatrix.length
+                  ? "Applied"
+                  : "Camera default"}
+              </dd>
+            </div>
+          </dl>
+        )}
+        {!photo.rawInfo && photo.sourceBitDepth > 8 && (
+          <p className="panel-note">
+            Decoded from a {photo.sourceBitDepth}-bit source while preserving
+            the original.
+          </p>
+        )}
         <button
           className="relink-button"
           onClick={() => relinkRef.current?.click()}
@@ -8198,6 +9067,9 @@ function DevelopPanels({
   setGamutWarnings,
   recordAiOperation,
   importCreativeLut,
+  saveSnapshot,
+  applySnapshot,
+  deleteSnapshot,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -8262,10 +9134,22 @@ function DevelopPanels({
   setGamutWarnings: (value: boolean) => void;
   recordAiOperation: (action: string) => void;
   importCreativeLut: () => void;
+  saveSnapshot: () => void;
+  applySnapshot: (snapshot: DevelopSnapshot) => void;
+  deleteSnapshot: (id: string) => void;
 }) {
   const a = photo.adjustments;
   const selectedMask = photo.masks.find((mask) => mask.id === selectedMaskId);
   const [combineMaskId, setCombineMaskId] = useState("");
+  const [presetQuery, setPresetQuery] = useState("");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const visibleUserPresets = userPresets.filter(
+    (preset) =>
+      (!favoritesOnly || preset.favorite) &&
+      `${preset.name} ${preset.group}`
+        .toLowerCase()
+        .includes(presetQuery.trim().toLowerCase()),
+  );
   const dragCurvePoint = (
     key: "shadows" | "midtones" | "highlights",
     event: React.PointerEvent<SVGCircleElement>,
@@ -8355,6 +9239,21 @@ function DevelopPanels({
             Export
           </button>
         </div>
+        <div className="preset-search-row">
+          <input
+            type="search"
+            aria-label="Search presets"
+            placeholder="Search presets or folders"
+            value={presetQuery}
+            onChange={(event) => setPresetQuery(event.target.value)}
+          />
+          <button
+            className={favoritesOnly ? "active" : ""}
+            onClick={() => setFavoritesOnly((value) => !value)}
+          >
+            ★ Favorites
+          </button>
+        </div>
         <div className="adaptive-presets">
           <span>Adaptive</span>
           <button onClick={() => void applyAdaptivePreset("subject")}>
@@ -8366,7 +9265,7 @@ function DevelopPanels({
           </button>
         </div>
         <div className="user-preset-list">
-          {userPresets.map((preset) => {
+          {visibleUserPresets.map((preset) => {
             const compatible = Object.keys(preset.settings).filter(
               (key) => key in defaults,
             ).length;
@@ -8411,6 +9310,16 @@ function DevelopPanels({
                   />
                 </label>
                 <div className="preset-row-actions">
+                  <button
+                    aria-label={`${preset.favorite ? "Remove" : "Add"} ${preset.name} ${preset.favorite ? "from" : "to"} favorites`}
+                    onClick={() =>
+                      updateUserPreset(preset.id, {
+                        favorite: !preset.favorite,
+                      })
+                    }
+                  >
+                    {preset.favorite ? "★" : "☆"}
+                  </button>
                   <button onClick={() => chooseUserPreset(preset)}>
                     Preview
                   </button>
@@ -8433,6 +9342,41 @@ function DevelopPanels({
               </details>
             );
           })}
+        </div>
+      </Panel>
+      <Panel title="Snapshots" badge={`${photo.snapshots.length}`} open={false}>
+        <button className="mask-batch" onClick={saveSnapshot}>
+          Save current variation
+        </button>
+        <div className="snapshot-grid">
+          <div className="snapshot-current">
+            <button type="button">
+              <img
+                src={photo.previewUrl}
+                alt="Current edit"
+                style={{ filter: cssFilter(a, photo.processVersion) }}
+              />
+              <span>Current edit</span>
+            </button>
+          </div>
+          {photo.snapshots.map((snapshot) => (
+            <div key={snapshot.id}>
+              <button onClick={() => applySnapshot(snapshot)}>
+                <img
+                  src={photo.previewUrl}
+                  alt=""
+                  style={{ filter: cssFilter(snapshot.adjustments) }}
+                />
+                <span>{snapshot.name}</span>
+              </button>
+              <button
+                aria-label={`Delete ${snapshot.name}`}
+                onClick={() => deleteSnapshot(snapshot.id)}
+              >
+                <Trash2 />
+              </button>
+            </div>
+          ))}
         </div>
       </Panel>
       <Panel title="Light">
@@ -9308,6 +10252,7 @@ function DevelopPanels({
               ["teeth", "Teeth"],
               ["linear", "Linear"],
               ["radial", "Radial"],
+              ["polygon", "Polygon"],
               ["luminance", "Luminance"],
               ["color", "Color range"],
               ["depth", "Depth range"],
@@ -9630,6 +10575,8 @@ function PurePanels({
   opticsProfiles,
   importOpticsProfiles,
   exportOpticsProfiles,
+  saveSensorDustMap,
+  applySensorDustMap,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -9643,6 +10590,8 @@ function PurePanels({
   opticsProfiles: OpticsProfile[];
   importOpticsProfiles: () => void;
   exportOpticsProfiles: () => void;
+  saveSensorDustMap: () => Promise<void>;
+  applySensorDustMap: () => Promise<void>;
 }) {
   const a = photo.adjustments;
   return (
@@ -9742,6 +10691,20 @@ function PurePanels({
           <span className="local-dot" /> Preview and export processing run
           locally.
         </p>
+      </Panel>
+      <Panel title="Sensor dust map" open={false}>
+        <p className="panel-note">
+          Learn repeatable sensor spots from Heal or Remove marks, then reuse
+          them for the same camera body.
+        </p>
+        <div className="preset-manager-actions">
+          <button onClick={() => void saveSensorDustMap()}>
+            Learn from this photo
+          </button>
+          <button onClick={() => void applySensorDustMap()}>
+            Apply camera map
+          </button>
+        </div>
       </Panel>
       <Panel title="Optics profile" badge="Auto">
         <div className="preset-manager-actions">
@@ -10190,6 +11153,8 @@ function FilmPanels({
   applyPreset,
   selectedPreset,
   choosePreset,
+  createFilmProfile,
+  exportFilmProfiles,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -10200,8 +11165,34 @@ function FilmPanels({
     name: string,
     settings: Partial<Adjustments>,
   ) => void;
+  createFilmProfile: () => void;
+  exportFilmProfiles: () => void;
 }) {
   const a = photo.adjustments;
+  const eras = [
+    "All",
+    ...Array.from(new Set(filmLooks.map((look) => look.era))),
+  ];
+  const [filmEra, setFilmEra] = useState("All");
+  const visibleLooks = filmLooks.filter(
+    (look) => filmEra === "All" || look.era === filmEra,
+  );
+  const cameraFilmTransform = (settings: Partial<Adjustments>) => {
+    const identity = `${photo.metadata.camera}|${photo.rawInfo?.colorMatrix.flat().join(",") ?? ""}`;
+    const seed = Array.from(identity).reduce(
+      (sum, character) => (sum * 31 + character.charCodeAt(0)) % 997,
+      17,
+    );
+    return {
+      ...settings,
+      redPrimaryHue: ((seed % 13) - 6) * 0.7,
+      greenPrimaryHue: (((seed >> 2) % 11) - 5) * 0.6,
+      bluePrimaryHue: (((seed >> 4) % 15) - 7) * 0.7,
+      redPrimarySaturation: (seed % 9) - 4,
+      greenPrimarySaturation: ((seed >> 3) % 9) - 4,
+      bluePrimarySaturation: ((seed >> 5) % 9) - 4,
+    };
+  };
   return (
     <>
       <div className="enhance-hero film-hero">
@@ -10218,8 +11209,21 @@ function FilmPanels({
         </button>
       </div>
       <Panel title="Film library" badge={`${filmLooks.length} stocks`}>
+        <div className="film-era-browser" role="tablist" aria-label="Film era">
+          {eras.map((era) => (
+            <button
+              key={era}
+              role="tab"
+              aria-selected={filmEra === era}
+              className={filmEra === era ? "active" : ""}
+              onClick={() => setFilmEra(era)}
+            >
+              {era}
+            </button>
+          ))}
+        </div>
         <div className="look-grid film-look-grid">
-          {filmLooks.map((look) => (
+          {visibleLooks.map((look) => (
             <button
               key={look.name}
               className={
@@ -10229,7 +11233,11 @@ function FilmPanels({
               }
               style={{ "--look": look.tone } as React.CSSProperties}
               onClick={() =>
-                choosePreset(`film-${look.name}`, look.name, look.settings)
+                choosePreset(
+                  `film-${look.name}`,
+                  look.name,
+                  cameraFilmTransform(look.settings),
+                )
               }
             >
               <i />
@@ -10291,6 +11299,13 @@ function FilmPanels({
       </Panel>
       <Panel title="Print character" open={false}>
         <AdjustSlider
+          label="Paper grade"
+          value={a.paperGrade}
+          min={-100}
+          max={100}
+          onChange={(v) => setAdjustment("paperGrade", v)}
+        />
+        <AdjustSlider
           label="Paper texture"
           value={a.paperTexture}
           min={0}
@@ -10308,6 +11323,31 @@ function FilmPanels({
           onChange={(v) => setAdjustment("vignette", v)}
         />
         <div className="film-options">
+          <button
+            onClick={() =>
+              applyPreset({
+                negativeInversion: a.negativeInversion ? 0 : 100,
+                temperature: a.negativeInversion ? a.temperature : -24,
+                tint: a.negativeInversion ? a.tint : 18,
+              })
+            }
+          >
+            {a.negativeInversion ? "Positive" : "Invert negative"}
+          </button>
+          <button
+            onClick={() =>
+              applyPreset({ darkroomFilter: -22, saturation: -100 })
+            }
+          >
+            Blue filter
+          </button>
+          <button
+            onClick={() =>
+              applyPreset({ darkroomFilter: 18, saturation: -100 })
+            }
+          >
+            Amber filter
+          </button>
           <button
             onClick={() =>
               applyPreset({ saturation: -100, contrast: 24, grain: 24 })
@@ -10339,6 +11379,44 @@ function FilmPanels({
           >
             Light struck
           </button>
+        </div>
+      </Panel>
+      <Panel title="Texture library" open={false}>
+        <div className="film-options">
+          <button
+            className={a.textureAsset === 0 ? "active" : ""}
+            onClick={() => setAdjustment("textureAsset", 0)}
+          >
+            Clean
+          </button>
+          <button
+            className={a.textureAsset === 1 ? "active" : ""}
+            onClick={() => setAdjustment("textureAsset", 1)}
+          >
+            Fiber paper
+          </button>
+          <button
+            className={a.textureAsset === 2 ? "active" : ""}
+            onClick={() => setAdjustment("textureAsset", 2)}
+          >
+            Fine scratches
+          </button>
+          <button
+            className={a.textureAsset === 3 ? "active" : ""}
+            onClick={() => setAdjustment("textureAsset", 3)}
+          >
+            Dust & glass
+          </button>
+        </div>
+        <p className="panel-note">
+          Procedural textures scale to the finished output without uploading
+          assets.
+        </p>
+      </Panel>
+      <Panel title="Film profiles" open={false}>
+        <div className="preset-manager-actions">
+          <button onClick={createFilmProfile}>Save current film profile</button>
+          <button onClick={exportFilmProfiles}>Export profiles</button>
         </div>
       </Panel>
     </>

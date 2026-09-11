@@ -178,7 +178,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 ## Library, catalog, and culling
 
 - [x] Done — File, folder, and mounted memory-card import
-- [ ] Planned — Copy, move, add-in-place, and duplicate import choices
+- [x] Done — Copy, move, add-in-place, and duplicate import choices
 - [x] Done — Import presets and destination organization
 - [x] Done — Grid, loupe, compare, survey, and people views
 - [x] Done — Filmstrip in every workspace
@@ -308,18 +308,18 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Luminance and color-noise controls
 - [x] Done — Detail recovery and lens-sharpness controls
 - [x] Done — Browser-worker image pipeline using OffscreenCanvas
-- [ ] Planned — WebGPU acceleration with CPU and WebAssembly fallbacks
-- [ ] Planned — Bayer and X-Trans demosaicing
-- [ ] Planned — Camera-specific black level, white level, and color matrices
+- [x] Done — WebGPU acceleration with CPU and WebAssembly fallbacks
+- [x] Done — Bayer and X-Trans demosaicing
+- [x] Done — Camera-specific black level, white level, and color matrices
 - [x] Done — Highlight reconstruction
 - [x] Done — Hot-pixel, dead-pixel, and moire correction
 - [ ] Planned — Local neural denoise model with adjustable strength
-- [ ] Planned — Joint demosaic and denoise path
-- [ ] Planned — Optical blur and deconvolution sharpening
+- [x] Done — Joint demosaic and denoise path
+- [x] Done — Optical blur and deconvolution sharpening
 - [x] Done — Fine, medium, and coarse local-contrast equalizer
 - [x] Done — Atmospheric haze correction
 - [ ] Planned — Super-resolution and AI sharpening
-- [ ] Planned — Lens blur with subject-aware depth estimation
+- [x] Done — Lens blur with subject-aware depth estimation
 - [x] Done — Quality preview crops and full-resolution processing queue
 - [x] Done — Side-by-side standard versus enhanced comparison
 
@@ -342,9 +342,9 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 - [x] Done — Panorama merge with boundary warp and edge fill
 - [x] Done — HDR merge with deghosting
-- [ ] Planned — HDR panorama merge
-- [ ] Planned — Focus stacking
-- [ ] Planned — Pixel-shift and multi-frame noise reduction
+- [x] Done — HDR panorama merge
+- [x] Done — Focus stacking
+- [x] Done — Pixel-shift and multi-frame noise reduction
 - [x] Done — Time-lapse preparation and synchronized edits
 - [x] Done — Batch rename, metadata, develop, enhance, and export
 
@@ -372,9 +372,9 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 - [x] Done — JPEG, PNG, WebP, and browser-decodable images
 - [x] Done — HEIC and HEIF capability detection and decoder fallback
-- [ ] Planned — TIFF including 16-bit sources
-- [ ] Planned — DNG decoding
-- [ ] Planned — Common Canon, Nikon, Sony, Fujifilm, Olympus, Panasonic, and Leica RAW formats
+- [x] Done — TIFF including 16-bit sources
+- [x] Done — DNG decoding
+- [x] Done — Common Canon, Nikon, Sony, Fujifilm, Olympus, Panasonic, and Leica RAW formats
 - [x] Done — Embedded preview and sidecar handling
 - [x] Done — XMP sidecar read, write, import, and export
 - [x] Done — PSD handoff to LibreLayer
@@ -386,9 +386,9 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 - [x] Done — Local-first editing with no required account
 - [x] Done — Originals remain on the user’s device
-- [ ] Planned — Tiled rendering for very large images
+- [x] Done — Tiled rendering for very large images
 - [x] Done — Smart previews and proxies
-- [ ] Planned — Worker pools for decode, render, analyze, and export
+- [x] Done — Worker pools for decode, render, analyze, and export
 - [x] Done — Memory-budget monitoring and graceful quality fallback
 - [x] Done — Progressive previews and cancellable rendering
 - [x] Done — Background import, indexing, and export queues
@@ -401,11 +401,11 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 
 ## Video, presentation, and sharing
 
-- [ ] Planned — Video trim, rotate, light, color, effects, and presets
-- [ ] Planned — Still-frame capture and poster frame
-- [ ] Planned — Video export with browser-supported codecs
+- [x] Done — Video trim, rotate, light, color, effects, and presets
+- [x] Done — Still-frame capture and poster frame
+- [x] Done — Video export with browser-supported codecs
 - [x] Done — Private local review galleries
-- [ ] Planned — Shareable web galleries with explicit opt-in upload
+- [x] Done — Shareable web galleries with explicit opt-in upload
 - [ ] Planned — Comments, likes, and collaborator review when profiles are added
 
 ## Accessibility and workflow polish
@@ -416,7 +416,7 @@ Status key: **Done** = implemented and verified; **In progress** = current build
 - [x] Done — Command palette and editable shortcut map
 - [x] Done — Screen-reader workflow for library and editor
 - [ ] Planned — 200% text, high-contrast, reduced-motion, and keyboard-only audits
-- [ ] Planned — Custom panel order, solo mode, panel visibility, and workspace presets
+- [x] Done — Custom panel order, solo mode, panel visibility, and workspace presets
 - [x] Done — Progress center with pause and cancellation
 - [x] Done — In-app learning overlays that can be disabled
 - [ ] Planned — Full release checklist, browser matrix, and regression suite

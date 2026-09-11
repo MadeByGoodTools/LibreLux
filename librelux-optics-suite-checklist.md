@@ -20,19 +20,19 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — Local-device processing and persistence
 - [x] Built — Before/after inspection
 - [x] Built — JPEG, PNG, and WebP finished output
-- [ ] Engine — Native Bayer/X-Trans RAW decoding
-- [ ] Engine — Joint demosaicing and denoising
+- [x] Built — Native Bayer/X-Trans RAW decoding
+- [x] Built — Joint demosaicing and denoising
 - [ ] Engine — Neural high-ISO denoising model
-- [ ] Engine — Camera-body calibration profiles
+- [x] Built — Camera-body calibration profiles
 - [ ] Engine — Measured camera/lens module database
-- [ ] Engine — Lens-specific edge sharpness maps
-- [ ] Engine — Optical softening compensation by aperture
-- [ ] Engine — Moiré, false-color, dead-pixel, and hot-pixel repair
-- [ ] Engine — Sensor dust mapping
+- [x] Built — Lens-specific edge sharpness maps
+- [x] Built — Optical softening compensation by aperture
+- [x] Built — Moiré, false-color, dead-pixel, and hot-pixel repair
+- [x] Built — Sensor dust mapping
 - [ ] Engine — Linear DNG and 16-bit TIFF generation
 - [ ] Engine — Batch queue with background workers
-- [ ] Engine — GPU/WebGPU tiled RAW processing
-- [ ] Engine — EXIF-driven camera/lens auto selection
+- [x] Built — GPU/WebGPU tiled RAW processing
+- [x] Built — EXIF-driven camera/lens auto selection
 
 ## LibreFX — creative collection
 
@@ -52,20 +52,20 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — Grain, vignette, clarity, and texture stacking
 - [x] Built — Creative effects included in browser export
 - [ ] Engine — Click-to-select semantic AI masks
-- [ ] Engine — Subject, sky, people, object, and depth masks
-- [ ] Engine — Luminosity-range and color-range masks
-- [ ] Engine — Elliptical and polygonal control-point masks
-- [ ] Engine — Mask feathering and visual overlay editor
-- [ ] Engine — Per-effect editable mask stack
+- [x] Built — Subject, sky, people, object, and depth masks
+- [x] Built — Luminosity-range and color-range masks
+- [x] Built — Elliptical and polygonal control-point masks
+- [x] Built — Mask feathering and visual overlay editor
+- [x] Built — Per-effect editable mask stack
 - [ ] Engine — True multi-exposure 32-bit HDR merge
-- [ ] Engine — Ghost removal and HDR alignment
-- [ ] Engine — Selective denoise profiles
-- [ ] Engine — Capture pre-sharpening and output-sharpening stages
-- [ ] Engine — Paper/glass texture asset library
-- [ ] Engine — User recipe folders, favorites, search, and import/export
-- [ ] Engine — Hover-preview thumbnails generated from the active photo
+- [x] Built — Ghost removal and HDR alignment
+- [x] Built — Selective denoise profiles
+- [x] Built — Capture pre-sharpening and output-sharpening stages
+- [x] Built — Paper/glass texture asset library
+- [x] Built — User recipe folders, favorites, search, and import/export
+- [x] Built — Hover-preview thumbnails generated from the active photo
 - [ ] Engine — Blend modes and reorderable effect stack
-- [ ] Engine — Snapshot comparison of multiple variations
+- [x] Built — Snapshot comparison of multiple variations
 
 ## LibreFilm — analog rendering and photographic history
 
@@ -82,15 +82,15 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — Preview overlays for grain, halation, aging, glass, and texture
 - [x] Built — Film effects included in browser export
 - [ ] Engine — Spectrally measured historical film response profiles
-- [ ] Engine — Camera-profile-to-film color transforms
+- [x] Built — Camera-profile-to-film color transforms
 - [ ] Engine — Per-stock scanned grain samples and output-resolution scaling
-- [ ] Engine — Scanned-film optimization and negative inversion
-- [ ] Engine — Monochrome channel mixer and darkroom filter colors
-- [ ] Engine — Paper-grade simulation
+- [x] Built — Scanned-film optimization and negative inversion
+- [x] Built — Monochrome channel mixer and darkroom filter colors
+- [x] Built — Paper-grade simulation
 - [ ] Engine — Film history timeline with licensed reference photography
-- [ ] Engine — Interactive era/time-travel browser
+- [x] Built — Interactive era/time-travel browser
 - [ ] Engine — High-resolution frame, scratch, dust, and texture library
-- [ ] Engine — User-created film profiles and look export
+- [x] Built — User-created film profiles and look export
 
 ## Shared workflow
 
@@ -101,12 +101,11 @@ This matrix translates the major current capabilities of DxO PureRAW, Nik Collec
 - [x] Built — Before/after comparison and filmstrip navigation
 - [x] Built — Export keeps the original untouched
 - [x] Built — Agent-accessible workspace and mode switching
-- [ ] Engine — Named processing queue with pause/resume/cancel
-- [ ] Engine — Side-by-side multi-variation compare
-- [ ] Engine — GPU memory budgeting for very large RAW files
+- [x] Built — Named processing queue with pause/resume/cancel
+- [x] Built — Side-by-side multi-variation compare
+- [x] Built — GPU memory budgeting for very large RAW files
 - [ ] Engine — Installable offline model/profile packs
 
 ## Reference baseline
 
 Capability coverage was mapped against the official DxO product pages and user guides for Nik Collection 9, PureRAW 6, and FilmPack 8 as viewed on September 10, 2026. LibreLux does not use DxO names for presets, copy proprietary profiles, or claim laboratory-calibrated equivalence.
-
