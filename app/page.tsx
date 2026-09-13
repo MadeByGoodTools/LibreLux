@@ -81,7 +81,9 @@ import {
   resampleLinearRaw,
 } from "./linear-raw-engine";
 import {
+  buildPortraitMatte,
   buildSemanticAiMask,
+  clearLocalAiSession,
   installLocalAiPack,
   localAiPackState,
   runNeuralRestore,
@@ -208,6 +210,7 @@ type PointColorSample = {
   variance: number;
 };
 type RetouchMode = "heal" | "clone" | "remove" | "generativeRemove" | "redEye";
+type MaskRefineMode = "add" | "subtract" | null;
 type RetouchSpot = {
   id: string;
   mode: RetouchMode;
@@ -2321,6 +2324,7 @@ export default function Home() {
   const [maskBrushDensity, setMaskBrushDensity] = useState(100);
   const [maskAuto, setMaskAuto] = useState(true);
   const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
+  const [maskRefineMode, setMaskRefineMode] = useState<MaskRefineMode>(null);
   const folderRef = useRef<HTMLInputElement>(null);
   const [albums, setAlbums] = useState<AlbumRecord[]>([]);
   const [activeAlbumId, setActiveAlbumId] = useState<string | null>(null);
@@ -2835,6 +2839,32 @@ export default function Home() {
     progressJobsLoaded.current = true;
   }, []);
   useEffect(() => {
+    let active = true;
+    const beginSmartMaskLoad = async () => {
+      if (!active) return;
+      await clearLocalAiSession();
+      if (!active) return;
+      setAiStatus("Smart Masks loading privately in the background…");
+      void installLocalAiPack("segment", (message, progress) => {
+        if (!active) return;
+        setAiStatus(
+          `${message}${typeof progress === "number" ? ` · ${Math.round(progress)}%` : ""}`,
+        );
+      })
+        .then(() => {
+          if (!active) return;
+          setAiPack(localAiPackState());
+          setAiStatus("Smart Masks ready for this session");
+        })
+        .catch(() => {
+          if (!active) return;
+          setAiPack(localAiPackState());
+          setAiStatus("Smart Masks paused — choose Retry when you are online");
+        });
+    };
+    const timer = window.setTimeout(() => void beginSmartMaskLoad(), 400);
+    const releaseSmartMasks = () => void clearLocalAiSession();
+    window.addEventListener("pagehide", releaseSmartMasks);
     queueMicrotask(() => {
       setAiPack(localAiPackState());
       const measuredProfiles = loadInstalledOpticsPack();
@@ -2847,6 +2877,12 @@ export default function Home() {
         ]);
       void loadSpectralFilmPack().then(setSpectralProfiles);
     });
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      window.removeEventListener("pagehide", releaseSmartMasks);
+      void clearLocalAiSession();
+    };
   }, []);
   const updateSelected = useCallback(
     (updater: (photo: RuntimePhoto) => RuntimePhoto, persist = true) => {
@@ -4848,7 +4884,7 @@ export default function Home() {
         ),
       );
       setAiPack(localAiPackState());
-      setAiStatus("Local AI pack ready and cached on this device");
+      setAiStatus("Local AI pack ready for this session");
     } catch (error) {
       setAiStatus(
         error instanceof Error ? error.message : "Local AI pack install failed",
@@ -7473,7 +7509,9 @@ export default function Home() {
               maskBrushFlow={maskBrushFlow}
               maskBrushDensity={maskBrushDensity}
               maskAuto={maskAuto}
+              maskRefineMode={maskRefineMode}
               onMaskCreated={addMask}
+              onMaskUpdated={updateMask}
               selectedMaskId={selectedMaskId}
               setSelectedMaskId={setSelectedMaskId}
               sampleMode={sampleMode}
@@ -7633,6 +7671,11 @@ export default function Home() {
                     setMaskBrushDensity={setMaskBrushDensity}
                     maskAuto={maskAuto}
                     setMaskAuto={setMaskAuto}
+                    maskRefineMode={maskRefineMode}
+                    setMaskRefineMode={setMaskRefineMode}
+                    smartMasksReady={aiPack.segment}
+                    smartMaskStatus={aiStatus}
+                    installSmartMasks={() => installAiPack("segment")}
                     selectedMaskId={selectedMaskId}
                     setSelectedMaskId={setSelectedMaskId}
                     updateMask={updateMask}
@@ -7974,8 +8017,8 @@ export default function Home() {
             </section>
             <section>
               <header><b>56</b><strong>Offline processing models</strong></header>
-              <p>Download once, then restore and semantic masking run locally without uploading photos.</p>
-              <div><button onClick={() => void installAiPack("restore")}>{aiPack.restore ? "Restore ready" : "Download restore"}</button><button onClick={() => void installAiPack("segment")}>{aiPack.segment ? "Masks ready" : "Download masks"}</button></div>
+              <p>Smart Masks load privately for each session, run locally, and are released when LibreLux closes.</p>
+              <div><button onClick={() => void installAiPack("restore")}>{aiPack.restore ? "Restore ready" : "Load restore"}</button><button onClick={() => void installAiPack("segment")}>{aiPack.segment ? "Masks ready" : "Retry masks"}</button></div>
             </section>
             <section>
               <header><b>57</b><strong>Automatic performance tuning</strong></header>
@@ -9402,7 +9445,9 @@ function EditorCanvas({
   maskBrushFlow,
   maskBrushDensity,
   maskAuto,
+  maskRefineMode,
   onMaskCreated,
+  onMaskUpdated,
   selectedMaskId,
   setSelectedMaskId,
   sampleMode,
@@ -9440,7 +9485,12 @@ function EditorCanvas({
   maskBrushFlow: number;
   maskBrushDensity: number;
   maskAuto: boolean;
+  maskRefineMode: MaskRefineMode;
   onMaskCreated: (mask: MaskRecord) => void;
+  onMaskUpdated: (
+    id: string,
+    updater: (mask: MaskRecord) => MaskRecord,
+  ) => void;
   selectedMaskId: string | null;
   setSelectedMaskId: (id: string | null) => void;
   sampleMode: "whiteBalance" | "pointColor" | null;
@@ -9458,6 +9508,7 @@ function EditorCanvas({
   const a = photo.adjustments;
   const imageRef = useRef<HTMLImageElement>(null);
   const [renderSource, setRenderSource] = useState(photo.previewUrl);
+  const [maskProcessing, setMaskProcessing] = useState(false);
   const activeMask = photo.masks.find((mask) => mask.id === selectedMaskId);
   const [retouchSource, setRetouchSource] = useState<{
     x: number;
@@ -9617,7 +9668,7 @@ function EditorCanvas({
     [1.414, "A-series"],
   ];
   const buildMagicMask = async (normalizedX: number, normalizedY: number) => {
-    if (!maskTarget || showBefore) return;
+    if (!maskTarget || showBefore || maskProcessing) return;
     const image = new Image();
     image.src = photo.url;
     await image.decode();
@@ -9633,11 +9684,71 @@ function EditorCanvas({
     const sampleCtx = sample.getContext("2d", { willReadFrequently: true });
     if (!sampleCtx) return;
     sampleCtx.drawImage(image, 0, 0, width, height);
+    if (["subject", "background", "person"].includes(maskTarget)) {
+      setMaskProcessing(true);
+      try {
+        const semantic = await buildPortraitMatte(
+          sample,
+          maskTarget as "subject" | "background" | "person",
+        );
+        const baseDataUrl = semantic.dataUrl;
+        const refinedDataUrl = await refineMaskDataUrl(
+          baseDataUrl,
+          maskEdge,
+          maskFeather,
+        );
+        onMaskCreated({
+          id: crypto.randomUUID(),
+          name:
+            maskTarget === "background"
+              ? "Detailed background"
+              : maskTarget === "person"
+                ? "Detailed person"
+                : "Detailed subject",
+          target: maskTarget,
+          dataUrl: refinedDataUrl,
+          baseDataUrl,
+          tolerance: maskTolerance,
+          feather: maskFeather,
+          edge: maskEdge,
+          visible: true,
+          inverted: false,
+          overlayColor: "#43dba4",
+          overlayOpacity: 48,
+          pinX: normalizedX,
+          pinY: normalizedY,
+          adjustments: { ...defaultLocal },
+          sourceFingerprint: editFingerprint({
+            cropTop: photo.adjustments.cropTop,
+            cropRight: photo.adjustments.cropRight,
+            cropBottom: photo.adjustments.cropBottom,
+            cropLeft: photo.adjustments.cropLeft,
+            rotation: photo.adjustments.rotation,
+            retouchCount: photo.retouchSpots.length,
+          }),
+        });
+        setMaskProcessing(false);
+        return;
+      } catch {
+        setMaskProcessing(false);
+        // Keep the fast local selector available on browsers that cannot load
+        // the optional portrait-matting model.
+      }
+    }
     if (
-      ["hair", "skin", "clothes", "person", "subject", "object"].includes(
-        maskTarget,
-      )
+      [
+        "hair",
+        "skin",
+        "clothes",
+        "face",
+        "facial-skin",
+        "body-skin",
+        "person",
+        "subject",
+        "object",
+      ].includes(maskTarget)
     ) {
+      setMaskProcessing(true);
       try {
         const semantic = await buildSemanticAiMask(
           sample,
@@ -9648,6 +9759,9 @@ function EditorCanvas({
           hair: "AI hair",
           skin: "AI skin",
           clothes: "AI clothes",
+          face: "AI face",
+          "facial-skin": "AI facial skin",
+          "body-skin": "AI body skin",
           person: "AI person",
           subject: "AI subject",
           object: "AI object",
@@ -9682,8 +9796,10 @@ function EditorCanvas({
             retouchCount: photo.retouchSpots.length,
           }),
         });
+        setMaskProcessing(false);
         return;
       } catch {
+        setMaskProcessing(false);
         // If the optional local model cannot run, keep the fast geometric and
         // color-aware selector available instead of losing the user's click.
       }
@@ -10025,6 +10141,47 @@ function EditorCanvas({
       }),
     });
   };
+  const applyMaskCorrection = async (
+    normalizedX: number,
+    normalizedY: number,
+  ) => {
+    if (!activeMask || !maskRefineMode) return;
+    const image = new Image();
+    image.src = activeMask.baseDataUrl ?? activeMask.dataUrl;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.drawImage(image, 0, 0);
+    context.globalCompositeOperation =
+      maskRefineMode === "add" ? "source-over" : "destination-out";
+    const radius =
+      Math.max(3, (maskBrushSize / 180) * Math.min(canvas.width, canvas.height));
+    const x = normalizedX * canvas.width;
+    const y = normalizedY * canvas.height;
+    const strength = (maskBrushFlow / 100) * (maskBrushDensity / 100);
+    const gradient = context.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, `rgba(255,255,255,${strength})`);
+    gradient.addColorStop(0.72, `rgba(255,255,255,${strength})`);
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    context.fillStyle = gradient;
+    context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+    const baseDataUrl = canvas.toDataURL("image/png");
+    const dataUrl = await refineMaskDataUrl(
+      baseDataUrl,
+      activeMask.edge,
+      activeMask.feather,
+    );
+    onMaskUpdated(activeMask.id, (mask) => ({
+      ...mask,
+      baseDataUrl,
+      dataUrl,
+      pinX: normalizedX,
+      pinY: normalizedY,
+    }));
+  };
   const handleCanvasClick = (event: React.MouseEvent<HTMLElement>) => {
     const source = imageRef.current;
     if (!source) return;
@@ -10034,6 +10191,10 @@ function EditorCanvas({
         Math.max(0, (event.clientX - rect.left) / rect.width),
       ),
       y = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    if (maskRefineMode && activeMask) {
+      void applyMaskCorrection(x, y);
+      return;
+    }
     if (retouchMode) {
       if (
         (retouchMode === "heal" || retouchMode === "clone") &&
@@ -10104,13 +10265,14 @@ function EditorCanvas({
     }
     void buildMagicMask(x, y);
   };
-  const picking = Boolean(maskTarget || sampleMode || retouchMode);
+  const picking = Boolean(maskTarget || maskRefineMode || sampleMode || retouchMode);
   return (
     <div className="photo-stage">
       <div
         className={`photo-wrap compare-${compareMode} ${cropMode ? "cropping" : ""} ${picking ? "mask-picking" : ""}`}
         style={{ width: `${zoom}%` }}
         role={picking ? "button" : undefined}
+        aria-busy={maskProcessing}
         aria-label={
           picking
             ? retouchMode
@@ -10302,7 +10464,11 @@ function EditorCanvas({
         {activeMask?.visible && (
           <div
             className="magic-highlight"
-            onClick={() => setSelectedMaskId(null)}
+            onClick={(event) => {
+              if (maskRefineMode) return;
+              event.stopPropagation();
+              setSelectedMaskId(null);
+            }}
             style={{
               background: activeMask.overlayColor,
               opacity: activeMask.overlayOpacity / 100,
@@ -10330,7 +10496,11 @@ function EditorCanvas({
         {picking && (
           <div className="mask-instruction">
             <WandSparkles />{" "}
-            {retouchMode
+            {maskProcessing
+              ? "Building a detailed local mask…"
+              : maskRefineMode
+              ? `Click to ${maskRefineMode} this mask · adjust brush size, flow, and density in the mask panel`
+              : retouchMode
               ? retouchMode === "heal" || retouchMode === "clone"
                 ? retouchSource
                   ? "Now click the repair target"
@@ -11391,6 +11561,11 @@ function DevelopPanels({
   setMaskBrushDensity,
   maskAuto,
   setMaskAuto,
+  maskRefineMode,
+  setMaskRefineMode,
+  smartMasksReady,
+  smartMaskStatus,
+  installSmartMasks,
   selectedMaskId,
   setSelectedMaskId,
   updateMask,
@@ -11461,6 +11636,11 @@ function DevelopPanels({
   setMaskBrushDensity: (value: number) => void;
   maskAuto: boolean;
   setMaskAuto: (value: boolean) => void;
+  maskRefineMode: MaskRefineMode;
+  setMaskRefineMode: (value: MaskRefineMode) => void;
+  smartMasksReady: boolean;
+  smartMaskStatus: string;
+  installSmartMasks: () => Promise<void>;
   selectedMaskId: string | null;
   setSelectedMaskId: (id: string | null) => void;
   updateMask: (id: string, updater: (mask: MaskRecord) => MaskRecord) => void;
@@ -11504,6 +11684,10 @@ function DevelopPanels({
 }) {
   const a = photo.adjustments;
   const selectedMask = photo.masks.find((mask) => mask.id === selectedMaskId);
+  const chooseMaskTarget = (value: MaskTarget) => {
+    setMaskRefineMode(null);
+    setMaskTarget(maskTarget === value ? null : value);
+  };
   const [combineMaskId, setCombineMaskId] = useState("");
   const [presetQuery, setPresetQuery] = useState("");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
@@ -12460,14 +12644,14 @@ function DevelopPanels({
       </Panel>
       <Panel title="Portrait & cleanup" open={false}>
         <div className="mask-presets">
-          <button onClick={() => setMaskTarget("skin")}>Select skin</button>
-          <button onClick={() => setMaskTarget("teeth")}>Select teeth</button>
-          <button onClick={() => setMaskTarget("eyes")}>Select eyes</button>
-          <button onClick={() => setMaskTarget("hair")}>Select hair</button>
-          <button onClick={() => setMaskTarget("clothes")}>
+          <button onClick={() => chooseMaskTarget("skin")}>Select skin</button>
+          <button onClick={() => chooseMaskTarget("teeth")}>Select teeth</button>
+          <button onClick={() => chooseMaskTarget("eyes")}>Select eyes</button>
+          <button onClick={() => chooseMaskTarget("hair")}>Select hair</button>
+          <button onClick={() => chooseMaskTarget("clothes")}>
             Select clothing
           </button>
-          <button onClick={() => setMaskTarget("person")}>Select person</button>
+          <button onClick={() => chooseMaskTarget("person")}>Select person</button>
         </div>
         <AdjustSlider
           label="Face / corner volume"
@@ -12694,6 +12878,29 @@ function DevelopPanels({
           Choose a subject-aware, gradient, or sampled range mask, then click
           the image to place or sample it.
         </p>
+        <div className="smart-mask-pack">
+          <button
+            className={smartMasksReady ? "active" : ""}
+            disabled={
+              smartMasksReady ||
+              /loading|preparing|downloading/i.test(smartMaskStatus)
+            }
+            onClick={() => void installSmartMasks()}
+          >
+            <WandSparkles />
+            {smartMasksReady
+              ? "Smart Masks ready"
+              : /loading|preparing|downloading/i.test(smartMaskStatus)
+                ? "Smart Masks loading"
+                : "Retry Smart Masks"}
+          </button>
+          <span>
+            {smartMaskStatus ||
+              (smartMasksReady
+                ? "Available in memory until LibreLux closes"
+                : "Detailed hair, skin, clothing, subject, and background models load automatically")}
+          </span>
+        </div>
         <div className="mask-tools">
           {(
             [
@@ -12721,7 +12928,7 @@ function DevelopPanels({
             <button
               className={maskTarget === value ? "active" : ""}
               key={value}
-              onClick={() => setMaskTarget(maskTarget === value ? null : value)}
+              onClick={() => chooseMaskTarget(value)}
             >
               <span className={`mask m${i % 6}`} />
               {name}
@@ -12735,7 +12942,7 @@ function DevelopPanels({
               <button
                 className={maskTarget === value ? "active" : ""}
                 key={value}
-                onClick={() => setMaskTarget(maskTarget === value ? null : value)}
+                onClick={() => chooseMaskTarget(value)}
               >
                 {value.replace("landscape-", "").replaceAll("-", " ")}
               </button>
@@ -12749,14 +12956,14 @@ function DevelopPanels({
               <button
                 className={maskTarget === value ? "active" : ""}
                 key={value}
-                onClick={() => setMaskTarget(maskTarget === value ? null : value)}
+                onClick={() => chooseMaskTarget(value)}
               >
                 {value.replaceAll("-", " ")}
               </button>
             ))}
           </div>
         </details>
-        {maskTarget === "brush" && (
+        {(maskTarget === "brush" || maskRefineMode) && (
           <div className="brush-mask-controls">
             <AdjustSlider
               label="Brush size"
@@ -12813,9 +13020,15 @@ function DevelopPanels({
           max={100}
           onChange={setMaskEdge}
         />
-        {maskTarget && (
-          <button className="cancel-mask" onClick={() => setMaskTarget(null)}>
-            Cancel selection
+        {(maskTarget || maskRefineMode) && (
+          <button
+            className="cancel-mask"
+            onClick={() => {
+              setMaskTarget(null);
+              setMaskRefineMode(null);
+            }}
+          >
+            Finish selection
           </button>
         )}
         {!!photo.masks.length && (
@@ -12858,6 +13071,26 @@ function DevelopPanels({
               />
             </label>
             <div className="mask-actions">
+              <button
+                className={maskRefineMode === "add" ? "active" : ""}
+                onClick={() => {
+                  setMaskTarget(null);
+                  setMaskRefineMode(maskRefineMode === "add" ? null : "add");
+                }}
+              >
+                Brush add
+              </button>
+              <button
+                className={maskRefineMode === "subtract" ? "active" : ""}
+                onClick={() => {
+                  setMaskTarget(null);
+                  setMaskRefineMode(
+                    maskRefineMode === "subtract" ? null : "subtract",
+                  );
+                }}
+              >
+                Brush subtract
+              </button>
               <button
                 onClick={() =>
                   updateMask(selectedMask.id, (mask) => ({

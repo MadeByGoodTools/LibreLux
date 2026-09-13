@@ -155,3 +155,37 @@ test("interactive accents use the LibreLux logo palette", async ({ page }) => {
   expect(palette.primaryBackground).toContain("linear-gradient");
   expect(palette.activeTabBackground).toContain("linear-gradient");
 });
+
+test("local masks support click selection and brush corrections", async ({ page }) => {
+  const errors = await collectErrors(page);
+  await openReady(page);
+  if (!(await page.locator(".comparison-edited").count())) {
+    await page.locator("#librelux-photo-import").setInputFiles(fixture);
+    await expect(page.locator(".comparison-edited")).toBeVisible();
+  }
+  await expect(
+    page.getByRole("button", {
+      name: /Smart Masks (loading|ready)|Retry Smart Masks/,
+    }),
+  ).toBeVisible();
+  const magicPoint = page.getByRole("button", { name: "Magic point", exact: true });
+  await magicPoint.scrollIntoViewIfNeeded();
+  await magicPoint.click();
+  const canvas = page.getByRole("button", { name: "Photo selection canvas" });
+  await page.locator(".comparison-edited").click({ position: { x: 48, y: 48 } });
+  await expect(page.locator(".mask-list").getByText("Magic selection")).toBeVisible();
+  const add = page.getByRole("button", { name: "Brush add", exact: true });
+  await add.click();
+  await expect(add).toHaveClass(/active/);
+  await canvas.click({ position: { x: 42, y: 42 }, force: true });
+  const subtract = page.getByRole("button", {
+    name: "Brush subtract",
+    exact: true,
+  });
+  await subtract.click();
+  await expect(subtract).toHaveClass(/active/);
+  await canvas.click({ position: { x: 60, y: 60 }, force: true });
+  await page.getByRole("button", { name: "Finish selection" }).click();
+  await expect(subtract).not.toHaveClass(/active/);
+  expect(errors).toEqual([]);
+});
