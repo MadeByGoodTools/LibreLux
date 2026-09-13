@@ -2842,6 +2842,32 @@ button.preset-selected {
 .album-create svg {
   width: 13px;
 }
+.collection-tools {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  padding: 0 12px 9px;
+}
+.collection-tools button {
+  min-width: 0;
+  min-height: 29px;
+  padding: 5px 7px;
+  border: 1px solid #343c36;
+  border-radius: 5px;
+  background: #202521;
+  color: #aeb7af;
+  font-size: 10px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.collection-tools button:last-child {
+  grid-column: 1 / -1;
+}
+.collection-tools button:hover {
+  border-color: #5f784d;
+  background: #283029;
+  color: #eaf3ea;
+}
 .album-list {
   display: flex;
   flex-direction: column;
@@ -2849,8 +2875,11 @@ button.preset-selected {
 }
 .album-list > div {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) 27px 27px;
   gap: 2px;
+}
+.album-list > div:first-child > button {
+  grid-column: 1 / -1;
 }
 .album-list button {
   height: 29px;
@@ -2873,16 +2902,34 @@ button.preset-selected {
   box-shadow: inset 2px 0 #b6f36b;
 }
 .album-list svg {
+  flex: 0 0 auto;
   width: 13px;
 }
-.album-list span {
+.album-list .album-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.album-list .album-count {
+  flex: 0 0 auto;
   margin-left: auto;
   color: #6f7971;
 }
+.album-list .album-target,
 .album-list .album-delete {
   width: 27px;
   padding: 0;
   justify-content: center;
+}
+.album-list .album-target {
+  color: #83907f;
+}
+.album-list .album-target:hover {
+  color: #d8ffad;
+  background: #29302b;
+}
+.album-list .album-delete {
   color: #725f5f;
 }
 .album-list .album-delete:hover {

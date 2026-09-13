@@ -95,3 +95,35 @@ test("has no serious automated accessibility violations", async ({ page }) => {
   );
   expect(blocking, JSON.stringify(blocking, null, 2)).toEqual([]);
 });
+
+test("album tools stay separated inside the narrow catalog rail", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "tablet-chromium", "The catalog rail is hidden in tablet mode");
+  const errors = await collectErrors(page);
+  await openReady(page);
+  const tools = page.locator(".collection-tools");
+  await tools.scrollIntoViewIfNeeded();
+  await expect(tools.getByRole("button")).toHaveCount(5);
+  const layout = await tools.evaluate((element) => ({
+    columns: getComputedStyle(element).gridTemplateColumns.split(" ").length,
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+  }));
+  expect(layout.columns).toBe(2);
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  const boxes = await tools.getByRole("button").evaluateAll((buttons) =>
+    buttons.map((button) => {
+      const box = button.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+    }),
+  );
+  for (let index = 0; index < boxes.length; index++)
+    for (let other = index + 1; other < boxes.length; other++) {
+      const a = boxes[index];
+      const b = boxes[other];
+      const overlaps =
+        Math.min(a.right, b.right) > Math.max(a.left, b.left) &&
+        Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top);
+      expect(overlaps).toBe(false);
+    }
+  expect(errors).toEqual([]);
+});

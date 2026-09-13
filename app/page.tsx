@@ -7192,7 +7192,8 @@ export default function Home() {
                 onClick={() => setActiveAlbumId(null)}
               >
                 <BookOpen />
-                All photos<span>{photos.length}</span>
+                <span className="album-name">All photos</span>
+                <span className="album-count">{photos.length}</span>
               </button>
             </div>
             {albums.map((album) => (
@@ -7202,10 +7203,12 @@ export default function Home() {
                   onClick={() => setActiveAlbumId(album.id)}
                 >
                   <FolderPlus />
-                  {album.parentId ? "↳ " : ""}
-                  {album.name}
-                  {album.target ? " ◆" : ""}
-                  <span>
+                  <span className="album-name">
+                    {album.parentId ? "↳ " : ""}
+                    {album.name}
+                    {album.target ? " ◆" : ""}
+                  </span>
+                  <span className="album-count">
                     {album.kind === "smart"
                       ? photos.filter((photo) => albumIncludes(album, photo))
                           .length
