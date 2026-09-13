@@ -99,6 +99,7 @@ import {
 } from "./open-packs";
 import {
   availableCollisionName,
+  buildCatalogHealth,
   defaultLabelDefinitions,
   editFingerprint,
   evaluateCull,
@@ -112,6 +113,20 @@ import {
   type LandscapeMaskTarget,
   type PersonMaskTarget,
 } from "./lightroom-2026";
+import {
+  adjustmentDifference,
+  automaticQualityPlan,
+  createEditRecipe,
+  decryptCatalogSync,
+  encryptCatalogSync,
+  portableCatalogManifest,
+  sha256,
+  validatePlugin,
+  verifyCommunityPackage,
+  type CommunityPackage,
+  type JsonObject,
+  type LibreLuxPlugin,
+} from "./open-ecosystem";
 import {
   Dialog,
   DialogContent,
@@ -2204,6 +2219,16 @@ export default function Home() {
     () => estimateGpuBudget(deviceMemory),
     [deviceMemory],
   );
+  const automaticQuality = useMemo(
+    () =>
+      automaticQualityPlan({
+        webGpu: typeof navigator !== "undefined" && "gpu" in navigator,
+        deviceMemory,
+        hardwareConcurrency:
+          typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4,
+      }),
+    [deviceMemory],
+  );
   const [workspace, setWorkspace] = useState<Workspace>("develop");
   const [opticsMode, setOpticsMode] = useState<OpticsMode>("pure");
   const [photos, setPhotos] = useState<RuntimePhoto[]>([]);
@@ -2308,6 +2333,15 @@ export default function Home() {
   >(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [openEcosystemOpen, setOpenEcosystemOpen] = useState(false);
+  const [ecosystemStatus, setEcosystemStatus] = useState("");
+  const [syncPhrase, setSyncPhrase] = useState("");
+  const [communityPackages, setCommunityPackages] = useState<CommunityPackage[]>([]);
+  const [openPlugins, setOpenPlugins] = useState<LibreLuxPlugin[]>([]);
+  const [portableCatalogDirectory, setPortableCatalogDirectory] =
+    useState<StoredDirectoryHandle | null>(null);
+  const [lastCatalogBackupAt, setLastCatalogBackupAt] = useState(0);
+  const [healthCheckedAt] = useState(() => Date.now());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [shortcutMap, setShortcutMap] = useState({
     library: "g",
@@ -2349,6 +2383,11 @@ export default function Home() {
   >([]);
   const catalogImportRef = useRef<HTMLInputElement>(null);
   const publishServiceRef = useRef<HTMLInputElement>(null);
+  const syncImportRef = useRef<HTMLInputElement>(null);
+  const communityPackageRef = useRef<HTMLInputElement>(null);
+  const pluginImportRef = useRef<HTMLInputElement>(null);
+  const recipeImportRef = useRef<HTMLInputElement>(null);
+  const roundTripManifestRef = useRef<HTMLInputElement>(null);
   const [catalogStatus, setCatalogStatus] = useState("");
   const [publishServices, setPublishServices] = useState<PublishService[]>([]);
   const [watchDirectory, setWatchDirectory] =
@@ -2645,6 +2684,21 @@ export default function Home() {
       );
     readSetting<StoredDirectoryHandle>("watch-directory")
       .then((handle) => setWatchDirectory(handle ?? null))
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    Promise.all([
+      readSetting<CommunityPackage[]>("community-packages"),
+      readSetting<LibreLuxPlugin[]>("open-plugins"),
+      readSetting<StoredDirectoryHandle>("portable-catalog-directory"),
+      readSetting<number>("last-catalog-backup-at"),
+    ])
+      .then(([packages, plugins, directory, backupAt]) => {
+        setCommunityPackages(packages ?? []);
+        setOpenPlugins(plugins ?? []);
+        setPortableCatalogDirectory(directory ?? null);
+        setLastCatalogBackupAt(backupAt ?? 0);
+      })
       .catch(() => undefined);
   }, []);
   useEffect(() => {
@@ -3534,6 +3588,195 @@ export default function Home() {
     }
     setCatalogStatus(`Published ${targets.length} photo${targets.length === 1 ? "" : "s"} to ${service.name}`);
   };
+  const downloadArtifact = (name: string, body: BlobPart[], type: string) => {
+    const url = URL.createObjectURL(new Blob(body, { type }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const syncPhotoRecord = (photo: RuntimePhoto) => ({
+    id: photo.id,
+    name: photo.name,
+    editedAt: photo.editedAt,
+    rating: photo.rating,
+    flagged: photo.flagged,
+    rejected: photo.rejected,
+    label: photo.label,
+    folder: photo.folder,
+    processVersion: photo.processVersion,
+    adjustments: photo.adjustments,
+    metadata: photo.metadata,
+    masks: photo.masks,
+    retouchSpots: photo.retouchSpots,
+    snapshots: photo.snapshots,
+    effectStack: photo.effectStack,
+  });
+  const exportEncryptedSync = async () => {
+    try {
+      const encrypted = await encryptCatalogSync(
+        {
+          format: "LibreLux Device Sync",
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          photos: photos.map(syncPhotoRecord),
+          albums,
+        },
+        syncPhrase,
+      );
+      downloadArtifact(
+        `LibreLux-Sync-${new Date().toISOString().slice(0, 10)}.llsync`,
+        [encrypted],
+        "application/x-librelux-sync",
+      );
+      setEcosystemStatus("Encrypted device sync is ready to share");
+    } catch (error) {
+      setEcosystemStatus(error instanceof Error ? error.message : "Sync export failed");
+    }
+  };
+  const importEncryptedSync = async (file?: File) => {
+    if (!file) return;
+    try {
+      const payload = await decryptCatalogSync(await file.text(), syncPhrase);
+      const incoming = Array.isArray(payload.photos)
+        ? (payload.photos as Array<ReturnType<typeof syncPhotoRecord>>)
+        : [];
+      let matched = 0;
+      const byId = new Map(incoming.map((photo) => [photo.id, photo]));
+      const next = photos.map((photo) => {
+        const remote = byId.get(photo.id);
+        if (!remote || remote.editedAt <= photo.editedAt) return photo;
+        matched += 1;
+        const merged = { ...photo, ...remote } as RuntimePhoto;
+        void savePhoto(merged);
+        return merged;
+      });
+      setPhotos(next);
+      if (Array.isArray(payload.albums)) {
+        const mergedAlbums = [...albums];
+        (payload.albums as AlbumRecord[]).forEach((album) => {
+          if (!mergedAlbums.some((item) => item.id === album.id)) mergedAlbums.push(album);
+        });
+        setAlbums(mergedAlbums);
+        await saveSetting("albums", mergedAlbums);
+      }
+      setEcosystemStatus(
+        `${matched} newer edit${matched === 1 ? "" : "s"} synchronized; originals stay on each device`,
+      );
+    } catch (error) {
+      setEcosystemStatus(error instanceof Error ? error.message : "Sync import failed");
+    }
+  };
+  const importCommunityPackage = async (file?: File) => {
+    if (!file) return;
+    try {
+      const pack = await verifyCommunityPackage(JSON.parse(await file.text()));
+      const next = [...communityPackages.filter((item) => item.id !== pack.id), pack];
+      setCommunityPackages(next);
+      await saveSetting("community-packages", next);
+      setEcosystemStatus(`${pack.name} installed with a verified signature`);
+    } catch (error) {
+      setEcosystemStatus(error instanceof Error ? error.message : "Package install failed");
+    }
+  };
+  const exportEditRecipe = async () => {
+    if (!selected) return;
+    const recipe = await createEditRecipe({
+      name: `${selected.name} recipe`,
+      processVersion: selected.processVersion,
+      adjustments: selected.adjustments as unknown as JsonObject,
+      masks: selected.masks,
+      effects: selected.effectStack,
+    });
+    downloadArtifact(
+      `${selected.name.replace(/\.[^.]+$/, "")}.llrecipe`,
+      [JSON.stringify(recipe, null, 2)],
+      "application/x-librelux-recipe",
+    );
+    setEcosystemStatus(`Reproducible recipe exported · ${recipe.digest.slice(0, 12)}`);
+  };
+  const importEditRecipe = async (file?: File) => {
+    if (!file || !selected) return;
+    try {
+      const recipe = JSON.parse(await file.text()) as {
+        format: string;
+        version: number;
+        digest: string;
+        steps: {
+          processVersion: "2026" | "2025";
+          adjustments: Adjustments;
+          masks: MaskRecord[];
+          effects: EffectLayer[];
+        };
+      };
+      if (
+        recipe.format !== "LibreLux Edit Recipe" ||
+        recipe.version !== 1 ||
+        (await sha256(recipe.steps)) !== recipe.digest
+      )
+        throw new Error("Recipe integrity check failed");
+      updateSelected((photo) => ({
+        ...photo,
+        processVersion: recipe.steps.processVersion,
+        adjustments: { ...defaults, ...recipe.steps.adjustments },
+        masks: recipe.steps.masks ?? [],
+        effectStack: recipe.steps.effects ?? [],
+      }));
+      setEcosystemStatus("Verified edit recipe applied");
+    } catch (error) {
+      setEcosystemStatus(error instanceof Error ? error.message : "Recipe import failed");
+    }
+  };
+  const importOpenPlugin = async (file?: File) => {
+    if (!file) return;
+    try {
+      const plugin = validatePlugin(JSON.parse(await file.text()));
+      const next = [...openPlugins.filter((item) => item.id !== plugin.id), plugin];
+      setOpenPlugins(next);
+      await saveSetting("open-plugins", next);
+      setEcosystemStatus(`${plugin.name} installed with ${plugin.permissions.join(", ")} access`);
+    } catch (error) {
+      setEcosystemStatus(error instanceof Error ? error.message : "Plug-in install failed");
+    }
+  };
+  const applyOpenPlugin = (plugin: LibreLuxPlugin) => {
+    if (!selected) return;
+    const adjustmentPatch = {
+      ...(plugin.hooks.raw ?? {}),
+      ...(plugin.hooks.effects ?? {}),
+    } as Partial<Adjustments>;
+    const metadataPatch = (plugin.hooks.metadata ?? {}) as Partial<PhotoMetadata>;
+    updateSelected((photo) => ({
+      ...photo,
+      adjustments: { ...photo.adjustments, ...adjustmentPatch },
+      metadata: { ...photo.metadata, ...metadataPatch },
+    }));
+    setEcosystemStatus(`${plugin.name} applied non-destructively`);
+  };
+  const importRoundTripManifest = async (file?: File) => {
+    if (!file || !selected) return;
+    try {
+      const manifest = JSON.parse(await file.text()) as {
+        format?: string;
+        sourceName?: string;
+        adjustments?: Adjustments;
+        masks?: MaskRecord[];
+        processVersion?: "2026" | "2025";
+      };
+      if (manifest.format !== "LibreLux LibreLayer Round Trip")
+        throw new Error("Round-trip manifest is not valid");
+      updateSelected((photo) => ({
+        ...photo,
+        adjustments: manifest.adjustments ?? photo.adjustments,
+        masks: manifest.masks ?? photo.masks,
+        processVersion: manifest.processVersion ?? photo.processVersion,
+      }));
+      setEcosystemStatus(`RAW settings and masks restored from ${manifest.sourceName ?? "LibreLayer"}`);
+    } catch (error) {
+      setEcosystemStatus(error instanceof Error ? error.message : "Round-trip restore failed");
+    }
+  };
   const handoffPsd = async (openLibreLayer = false) => {
     if (!selected) return;
     const { writePsd } = await import("ag-psd");
@@ -3588,6 +3831,28 @@ export default function Home() {
     anchor.download = `${selected.name.replace(/\.[^.]+$/, "")}-LibreLux.psd`;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadArtifact(
+      `${selected.name.replace(/\.[^.]+$/, "")}-LibreLux-roundtrip.json`,
+      [
+        JSON.stringify(
+          {
+            format: "LibreLux LibreLayer Round Trip",
+            version: 1,
+            sourceId: selected.id,
+            sourceName: selected.name,
+            processVersion: selected.processVersion,
+            rawInfo: selected.rawInfo,
+            adjustments: selected.adjustments,
+            masks: selected.masks,
+            exportedAt: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+      ],
+      "application/json",
+    );
+    setEcosystemStatus("Layered PSD and RAW/mask round-trip manifest exported");
     if (openLibreLayer)
       window.open(
         "https://librelayer.goodtools.ca/?from=librelux",
@@ -4025,7 +4290,7 @@ export default function Home() {
     setSelectedId(id);
     setSelectedIds([id]);
   };
-  const exportCatalog = () => {
+  const buildCatalogArchive = () => {
     const records = photos.map(
       ({
         url,
@@ -4057,7 +4322,7 @@ export default function Home() {
         records,
       }),
     );
-    const data = new Blob(
+    return new Blob(
       [
         header,
         new Uint8Array([10]),
@@ -4067,12 +4332,132 @@ export default function Home() {
       ],
       { type: "application/x-librelux-catalog" },
     );
+  };
+  const exportCatalog = () => {
+    const data = buildCatalogArchive();
     const url = URL.createObjectURL(data);
     const link = document.createElement("a");
     link.href = url;
     link.download = `LibreLux-Catalog-${new Date().toISOString().slice(0, 10)}.libreluxcat`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const savedAt = Date.now();
+    setLastCatalogBackupAt(savedAt);
+    void saveSetting("last-catalog-backup-at", savedAt);
+  };
+  const choosePortableCatalogDirectory = async () => {
+    if (!window.showDirectoryPicker) {
+      setEcosystemStatus("External-drive folders require Chrome or Edge");
+      return;
+    }
+    try {
+      const directory = await window.showDirectoryPicker();
+      const permission = await directory.requestPermission?.({ mode: "readwrite" });
+      if (permission && permission !== "granted")
+        throw new Error("Folder access was not granted");
+      setPortableCatalogDirectory(directory);
+      await saveSetting("portable-catalog-directory", directory);
+      setEcosystemStatus(`${directory.name} is now the portable catalog location`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setEcosystemStatus(error instanceof Error ? error.message : "Folder selection failed");
+    }
+  };
+  const savePortableCatalog = async () => {
+    if (!portableCatalogDirectory) {
+      await choosePortableCatalogDirectory();
+      return;
+    }
+    try {
+      const permission = await portableCatalogDirectory.queryPermission?.({
+        mode: "readwrite",
+      });
+      if (permission !== "granted") {
+        const requested = await portableCatalogDirectory.requestPermission?.({
+          mode: "readwrite",
+        });
+        if (requested !== "granted") throw new Error("Reconnect the portable catalog folder");
+      }
+      const savedAt = Date.now();
+      const catalog = buildCatalogArchive();
+      const catalogHandle = await portableCatalogDirectory.getFileHandle(
+        "LibreLux-Portable.libreluxcat",
+        { create: true },
+      );
+      const catalogWriter = await catalogHandle.createWritable();
+      await catalogWriter.write(catalog);
+      await catalogWriter.close();
+      const manifestHandle = await portableCatalogDirectory.getFileHandle(
+        ".librelux-portable.json",
+        { create: true },
+      );
+      const manifestWriter = await manifestHandle.createWritable();
+      await manifestWriter.write(
+        new Blob(
+          [
+            JSON.stringify(
+              portableCatalogManifest({
+                catalogId: "local-default",
+                photoCount: photos.length,
+                lastBackupAt: savedAt,
+              }),
+              null,
+              2,
+            ),
+          ],
+          { type: "application/json" },
+        ),
+      );
+      await manifestWriter.close();
+      setLastCatalogBackupAt(savedAt);
+      await saveSetting("last-catalog-backup-at", savedAt);
+      setEcosystemStatus(`Portable catalog verified on ${portableCatalogDirectory.name}`);
+    } catch (error) {
+      setEcosystemStatus(error instanceof Error ? error.message : "Portable catalog save failed");
+    }
+  };
+  const catalogHealth = buildCatalogHealth(
+    photos.map((photo) => ({
+      id: photo.id,
+      missing: photo.missing || !(photo.blob instanceof Blob),
+      hasPreview: Boolean(photo.previewBlob || photo.displayBlob || photo.blob.size),
+      sidecarCurrent: photo.masks.every(
+        (mask) => !mask.sourceFingerprint || mask.sourceFingerprint === editFingerprint({
+          cropTop: photo.adjustments.cropTop,
+          cropRight: photo.adjustments.cropRight,
+          cropBottom: photo.adjustments.cropBottom,
+          cropLeft: photo.adjustments.cropLeft,
+          rotation: photo.adjustments.rotation,
+          retouchCount: photo.retouchSpots.length,
+        }),
+      ),
+      backupAgeDays: lastCatalogBackupAt
+        ? (healthCheckedAt - lastCatalogBackupAt) / 86_400_000
+        : Infinity,
+    })),
+  );
+  const exportCatalogHealth = () => {
+    const report = {
+      format: "LibreLux Catalog Health",
+      version: 1,
+      createdAt: new Date().toISOString(),
+      summary: {
+        photos: photos.length,
+        issues: catalogHealth.length,
+        healthy: photos.length > 0 && catalogHealth.length === 0,
+      },
+      issues: catalogHealth,
+    };
+    downloadArtifact(
+      `LibreLux-Health-${new Date().toISOString().slice(0, 10)}.json`,
+      [JSON.stringify(report, null, 2)],
+      "application/json",
+    );
+    setEcosystemStatus(
+      catalogHealth.length
+        ? `Health report saved with ${catalogHealth.length} action item${catalogHealth.length === 1 ? "" : "s"}`
+        : "Catalog health report saved · no issues found",
+    );
   };
   const restoreCatalog = async (file?: File) => {
     if (!file) return;
@@ -6267,6 +6652,15 @@ export default function Home() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const transformPhoto = previewPhoto ?? selected;
+  const visualEditDifferences = selected
+    ? adjustmentDifference(
+        (selected.snapshots.at(-1)?.adjustments ?? defaults) as unknown as Record<
+          string,
+          unknown
+        >,
+        selected.adjustments as unknown as Record<string, unknown>,
+      ).slice(0, 12)
+    : [];
   const photoTransform = transformPhoto
     ? `translate(${transformPhoto.adjustments.offsetX / 4}px,${transformPhoto.adjustments.offsetY / 4}px) rotate(${transformPhoto.adjustments.rotation}deg) scale(${transformPhoto.adjustments.flipX * (transformPhoto.adjustments.perspectiveScale / 100) * (1 + transformPhoto.adjustments.distortion / 700) * (1 + transformPhoto.adjustments.anamorphic / 200) * (1 + transformPhoto.adjustments.volumeDeform / 1000)},${transformPhoto.adjustments.flipY * (transformPhoto.adjustments.perspectiveScale / 100) * (1 + transformPhoto.adjustments.distortion / 700) * (1 - transformPhoto.adjustments.volumeDeform / 1500)}) perspective(900px) rotateX(${transformPhoto.adjustments.perspectiveV / 15}deg) rotateY(${transformPhoto.adjustments.perspectiveH / 15}deg)`
     : "";
@@ -6332,6 +6726,56 @@ export default function Home() {
         hidden
         onChange={(event) => {
           void importPublishService(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
+      <input
+        ref={syncImportRef}
+        type="file"
+        accept=".llsync,application/x-librelux-sync"
+        hidden
+        onChange={(event) => {
+          void importEncryptedSync(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
+      <input
+        ref={communityPackageRef}
+        type="file"
+        accept=".llpack,application/json"
+        hidden
+        onChange={(event) => {
+          void importCommunityPackage(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
+      <input
+        ref={pluginImportRef}
+        type="file"
+        accept=".llplugin,application/json"
+        hidden
+        onChange={(event) => {
+          void importOpenPlugin(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
+      <input
+        ref={recipeImportRef}
+        type="file"
+        accept=".llrecipe,application/json"
+        hidden
+        onChange={(event) => {
+          void importEditRecipe(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
+      <input
+        ref={roundTripManifestRef}
+        type="file"
+        accept=".json,application/json"
+        hidden
+        onChange={(event) => {
+          void importRoundTripManifest(event.target.files?.[0]);
           event.currentTarget.value = "";
         }}
       />
@@ -6561,6 +7005,9 @@ export default function Home() {
             </button>
             <button onClick={() => void verifyAndOptimizeCatalog()}>
               <Check /> Verify & optimize
+            </button>
+            <button onClick={() => setOpenEcosystemOpen(true)}>
+              <Sparkles /> Open ecosystem
             </button>
             <button onClick={autoStackPhotos}>
               <Columns2 /> Auto-stack bursts
@@ -7449,6 +7896,11 @@ export default function Home() {
                 keys: "",
                 run: () => setPreferencesOpen(true),
               },
+              {
+                name: "Open ecosystem",
+                keys: "",
+                run: () => setOpenEcosystemOpen(true),
+              },
             ].map((command) => (
               <button
                 key={command.name}
@@ -7462,6 +7914,95 @@ export default function Home() {
               </button>
             ))}
           </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={openEcosystemOpen} onOpenChange={setOpenEcosystemOpen}>
+        <DialogContent className="ecosystem-dialog">
+          <DialogHeader>
+            <DialogTitle>Open ecosystem</DialogTitle>
+            <DialogDescription>
+              Portable, inspectable tools for moving work between devices and extending LibreLux.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="ecosystem-grid">
+            <section>
+              <header><b>51</b><strong>Encrypted device sync</strong></header>
+              <p>AES-256 encrypted edit and album transfer. Originals never leave either device.</p>
+              <label>
+                <span>Private sync phrase</span>
+                <input
+                  type="password"
+                  value={syncPhrase}
+                  minLength={8}
+                  autoComplete="new-password"
+                  onChange={(event) => setSyncPhrase(event.target.value)}
+                />
+              </label>
+              <div><button onClick={() => void exportEncryptedSync()}>Export sync</button><button onClick={() => syncImportRef.current?.click()}>Import sync</button></div>
+            </section>
+            <section>
+              <header><b>52</b><strong>Signed profile marketplace</strong></header>
+              <p>Installs open camera, lens, effect, and metadata packs only after signature verification.</p>
+              <button onClick={() => communityPackageRef.current?.click()}>Install signed package</button>
+              <small>{communityPackages.length} verified package{communityPackages.length === 1 ? "" : "s"} installed</small>
+            </section>
+            <section>
+              <header><b>53</b><strong>Reproducible edit recipes</strong></header>
+              <p>Every adjustment, mask, effect, process version, and integrity digest travels together.</p>
+              <div><button disabled={!selected} onClick={() => void exportEditRecipe()}>Export recipe</button><button disabled={!selected} onClick={() => recipeImportRef.current?.click()}>Apply recipe</button></div>
+            </section>
+            <section>
+              <header><b>54</b><strong>Visual edit differences</strong></header>
+              <p>Current edit compared with the latest saved version.</p>
+              <div className="difference-map" aria-label="Edit difference map">
+                {visualEditDifferences.length ? visualEditDifferences.map((item) => (
+                  <div key={item.key} title={`${item.before} to ${item.after}`}>
+                    <span>{item.key.replace(/([A-Z])/g, " $1")}</span>
+                    <i className={item.delta > 0 ? "positive" : "negative"} style={{ width: `${Math.min(100, Math.max(6, Math.abs(item.delta)))}%` }} />
+                    <b>{item.delta > 0 ? "+" : ""}{Math.round(item.delta * 10) / 10}</b>
+                  </div>
+                )) : <small>Save a version, then make an edit to see its difference map.</small>}
+              </div>
+            </section>
+            <section>
+              <header><b>55</b><strong>LibreLayer round trip</strong></header>
+              <p>Layered PSD handoff now includes a companion file that restores RAW settings and masks.</p>
+              <div><button disabled={!selected} onClick={() => void handoffPsd(true)}>Send to LibreLayer</button><button disabled={!selected} onClick={() => roundTripManifestRef.current?.click()}>Restore edit data</button></div>
+            </section>
+            <section>
+              <header><b>56</b><strong>Offline processing models</strong></header>
+              <p>Download once, then restore and semantic masking run locally without uploading photos.</p>
+              <div><button onClick={() => void installAiPack("restore")}>{aiPack.restore ? "Restore ready" : "Download restore"}</button><button onClick={() => void installAiPack("segment")}>{aiPack.segment ? "Masks ready" : "Download masks"}</button></div>
+            </section>
+            <section>
+              <header><b>57</b><strong>Automatic performance tuning</strong></header>
+              <p>WebGPU, memory, and CPU diagnostics choose safe preview, worker, and tile limits.</p>
+              <dl><div><dt>Plan</dt><dd>{automaticQuality.tier}</dd></div><div><dt>Preview</dt><dd>{automaticQuality.previewEdge}px</dd></div><div><dt>Workers</dt><dd>{automaticQuality.workers}</dd></div><div><dt>Tiles</dt><dd>{automaticQuality.tile}px</dd></div></dl>
+              <button onClick={() => { void saveSetting("automatic-quality", automaticQuality); setEcosystemStatus(`${automaticQuality.tier} quality plan saved`); }}>Use automatic plan</button>
+            </section>
+            <section>
+              <header><b>58</b><strong>Open plug-in API</strong></header>
+              <p>Permission-scoped JSON plug-ins can extend RAW, masks, effects, metadata, and export workflows.</p>
+              <button onClick={() => pluginImportRef.current?.click()}>Install plug-in</button>
+              {openPlugins.map((plugin) => <button key={plugin.id} disabled={!selected} onClick={() => applyOpenPlugin(plugin)}>Apply {plugin.name}</button>)}
+            </section>
+            <section>
+              <header><b>59</b><strong>Portable external-drive catalog</strong></header>
+              <p>Keep a complete catalog and portable manifest in a folder you control.</p>
+              <small>{portableCatalogDirectory?.name ?? "No folder connected"}</small>
+              <div><button onClick={() => void choosePortableCatalogDirectory()}>Choose folder</button><button onClick={() => void savePortableCatalog()}>Save portable catalog</button></div>
+            </section>
+            <section>
+              <header><b>60</b><strong>Catalog health report</strong></header>
+              <p>Checks missing originals, previews, stale mask sidecars, and overdue backups.</p>
+              <strong className={catalogHealth.length ? "health-warning" : "health-good"}>{catalogHealth.length ? `${catalogHealth.length} action item${catalogHealth.length === 1 ? "" : "s"}` : "No issues found"}</strong>
+              <div><button onClick={() => void verifyAndOptimizeCatalog()}>Repair what is safe</button><button onClick={exportCatalogHealth}>Export report</button></div>
+            </section>
+          </div>
+          {ecosystemStatus && <p className="ecosystem-status" role="status" aria-live="polite">{ecosystemStatus}</p>}
+          <DialogFooter>
+            <button className="primary-button" onClick={() => setOpenEcosystemOpen(false)}>Done</button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
       <Dialog open={preferencesOpen} onOpenChange={setPreferencesOpen}>
@@ -8938,12 +9479,11 @@ function EditorCanvas({
     };
   }, [allowFullResolution, photo.id, photo.previewUrl, photo.url]);
   const [customCrop, setCustomCrop] = useState({ width: 4, height: 3 });
-  const [cropOutsideOpacity, setCropOutsideOpacity] = useState(42);
-  useEffect(() => {
+  const [cropOutsideOpacity, setCropOutsideOpacity] = useState(() => {
+    if (typeof window === "undefined") return 42;
     const saved = Number(localStorage.getItem("librelux-crop-outside-opacity"));
-    if (Number.isFinite(saved) && saved >= 0 && saved <= 90)
-      setCropOutsideOpacity(saved);
-  }, []);
+    return Number.isFinite(saved) && saved >= 0 && saved <= 90 ? saved : 42;
+  });
   useEffect(() => {
     localStorage.setItem(
       "librelux-crop-outside-opacity",
