@@ -135,6 +135,9 @@ export function applyDepthAwareLensBlur(
   width: number,
   height: number,
   amount: number,
+  focusPlane = 50,
+  highlightBoost = 20,
+  bokehCharacter = 50,
 ) {
   if (amount <= 0) return;
   const sharp = document.createElement("canvas");
@@ -167,8 +170,10 @@ export function applyDepthAwareLensBlur(
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       const offset = (y * width + x) * 4;
-      const nx = (x / Math.max(1, width - 1) - 0.5) / 0.34;
-      const ny = (y / Math.max(1, height - 1) - 0.5) / 0.48;
+      const focusY = 0.24 + (Math.max(0, Math.min(100, focusPlane)) / 100) * 0.52;
+      const spread = 0.26 + (Math.max(0, Math.min(100, bokehCharacter)) / 100) * 0.18;
+      const nx = (x / Math.max(1, width - 1) - 0.5) / spread;
+      const ny = (y / Math.max(1, height - 1) - focusY) / (spread * 1.35);
       const centerPrior = Math.max(0, 1.2 - Math.sqrt(nx * nx + ny * ny));
       const luminance =
         source[offset] * 0.2126 +
@@ -188,6 +193,12 @@ export function applyDepthAwareLensBlur(
   }
   subjectContext.putImageData(pixels, 0, 0);
   context.drawImage(subject, 0, 0);
+  if (highlightBoost > 0) {
+    context.globalCompositeOperation = "screen";
+    context.globalAlpha = Math.min(0.32, highlightBoost / 310);
+    context.filter = `blur(${Math.max(2, amount * 0.7)}px) brightness(${1 + highlightBoost / 180})`;
+    context.drawImage(sharp, 0, 0);
+  }
   context.restore();
 }
 

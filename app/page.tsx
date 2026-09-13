@@ -98,6 +98,21 @@ import {
   type SpectralFilmProfile,
 } from "./open-packs";
 import {
+  availableCollisionName,
+  defaultLabelDefinitions,
+  editFingerprint,
+  evaluateCull,
+  landscapeMaskTargets,
+  normalizeLabels,
+  personMaskTargets,
+  refineMaskAlpha,
+  type LabelDefinition,
+  type CullPreferences,
+  type DetailedCullScores,
+  type LandscapeMaskTarget,
+  type PersonMaskTarget,
+} from "./lightroom-2026";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -148,7 +163,9 @@ type MaskTarget =
   | "person"
   | "face"
   | "eyes"
-  | "teeth";
+  | "teeth"
+  | LandscapeMaskTarget
+  | PersonMaskTarget;
 type LocalAdjustments = {
   exposure: number;
   contrast: number;
@@ -164,6 +181,7 @@ type LocalAdjustments = {
   dehaze: number;
   sharpness: number;
   noise: number;
+  moire: number;
   curveShadows: number;
   curveMidtones: number;
   curveHighlights: number;
@@ -190,8 +208,10 @@ type MaskRecord = {
   name: string;
   target: MaskTarget;
   dataUrl: string;
+  baseDataUrl?: string;
   tolerance: number;
   feather: number;
+  edge: number;
   visible: boolean;
   inverted: boolean;
   overlayColor: string;
@@ -199,6 +219,7 @@ type MaskRecord = {
   pinX: number;
   pinY: number;
   adjustments: LocalAdjustments;
+  sourceFingerprint?: string;
 };
 type DevelopSnapshot = {
   id: string;
@@ -314,6 +335,7 @@ type Adjustments = {
   wideGamut: number;
   volumeDeform: number;
   glareReduction: number;
+  reflectionQuality: number;
   dustRemoval: number;
   highlightRecovery: number;
   hotPixelRepair: number;
@@ -323,6 +345,9 @@ type Adjustments = {
   coarseContrast: number;
   superResolution: number;
   lensBlur: number;
+  lensBlurFocus: number;
+  lensBlurHighlights: number;
+  lensBlurBokeh: number;
   cornerSharpness: number;
   apertureCorrection: number;
   negativeInversion: number;
@@ -355,7 +380,48 @@ type CullScores = {
   exposure: number;
   faces: number;
   similarity: number;
+  faceScores?: number[];
+  subject?: number;
+  blur?: number;
+  duplicate?: number;
+  shallowDepth?: number;
 };
+
+function perceptualHashDistance(a: string, b: string) {
+  if (!a || a.length !== b.length) return Infinity;
+  let distance = 0;
+  for (let i = 0; i < a.length; i++) {
+    let value = parseInt(a[i], 16) ^ parseInt(b[i], 16);
+    while (value) {
+      distance += value & 1;
+      value >>= 1;
+    }
+  }
+  return distance;
+}
+
+const defaultCullPreferences: CullPreferences = {
+  focusStrictness: 55,
+  exposureStrictness: 50,
+  protectShallowDepth: true,
+};
+
+function detailedCullScores(cull: CullScores): DetailedCullScores {
+  return {
+    subjectSharpness: cull.subject ?? cull.focus,
+    eyeSharpness:
+      cull.faceScores?.length
+        ? Math.max(...cull.faceScores)
+        : cull.faces
+          ? cull.focus
+          : cull.subject ?? cull.focus,
+    eyesOpen: cull.faces ? Math.min(100, 48 + cull.focus * 0.52) : 0,
+    exposure: cull.exposure,
+    blur: cull.blur ?? 100 - cull.focus,
+    duplicate: cull.duplicate ?? cull.similarity,
+    shallowDepthConfidence: cull.shallowDepth ?? 0,
+  };
+}
 type PhotoRecord = {
   id: string;
   name: string;
@@ -377,6 +443,7 @@ type PhotoRecord = {
   perceptualHash: string;
   cull: CullScores;
   stackId: string | null;
+  stackCover?: boolean;
   missing: boolean;
   processVersion: "2026" | "2025";
   previewBlob: Blob | null;
@@ -426,7 +493,32 @@ type AlbumRecord = {
   parentId: string | null;
   rule: "five-stars" | "flagged" | "edited" | "people" | null;
   target: boolean;
+  advancedRule?: SmartAlbumRule;
 };
+type SmartAlbumRule =
+  | { op: "and" | "or"; rules: SmartAlbumRule[] }
+  | {
+      field: "rating" | "flagged" | "rejected" | "label" | "camera" | "keyword";
+      operator: "equals" | "at-least" | "contains";
+      value: string | number | boolean;
+    };
+
+function matchesSmartAlbum(photo: RuntimePhoto, rule: SmartAlbumRule): boolean {
+  if ("op" in rule)
+    return rule.op === "and"
+      ? rule.rules.every((item) => matchesSmartAlbum(photo, item))
+      : rule.rules.some((item) => matchesSmartAlbum(photo, item));
+  const source =
+    rule.field === "keyword"
+      ? photo.metadata.keywords.join(" ")
+      : rule.field === "camera"
+        ? photo.metadata.camera
+        : photo[rule.field];
+  if (rule.operator === "at-least") return Number(source) >= Number(rule.value);
+  if (rule.operator === "contains")
+    return String(source).toLowerCase().includes(String(rule.value).toLowerCase());
+  return source === rule.value;
+}
 type ExportRecipe = {
   id: string;
   name: string;
@@ -445,6 +537,12 @@ type ProgressJob = {
   kind: "import" | "analyze" | "export" | "merge";
   progress: number;
   status: "queued" | "running" | "paused" | "done" | "cancelled" | "failed";
+};
+type PublishService = {
+  id: string;
+  name: string;
+  endpoint: string;
+  method: "POST" | "PUT";
 };
 type OpticsProfile = {
   id: string;
@@ -563,6 +661,7 @@ const defaultLocal: LocalAdjustments = {
   dehaze: 0,
   sharpness: 0,
   noise: 0,
+  moire: 0,
   curveShadows: 0,
   curveMidtones: 0,
   curveHighlights: 0,
@@ -652,6 +751,7 @@ const defaults: Adjustments = {
   wideGamut: 0,
   volumeDeform: 0,
   glareReduction: 0,
+  reflectionQuality: 2,
   dustRemoval: 0,
   highlightRecovery: 0,
   hotPixelRepair: 0,
@@ -661,6 +761,9 @@ const defaults: Adjustments = {
   coarseContrast: 0,
   superResolution: 100,
   lensBlur: 0,
+  lensBlurFocus: 50,
+  lensBlurHighlights: 20,
+  lensBlurBokeh: 50,
   cornerSharpness: 0,
   apertureCorrection: 0,
   negativeInversion: 0,
@@ -965,11 +1068,11 @@ const filmLooks = [
 }[];
 const labelColors: Record<Label, string> = {
   none: "transparent",
-  red: "#f46d74",
-  yellow: "#e6c34f",
-  green: "#66bf8d",
-  blue: "#6ca7e8",
-  purple: "#a881d8",
+  red: "var(--label-red, #f46d74)",
+  yellow: "var(--label-yellow, #e6c34f)",
+  green: "var(--label-green, #66bf8d)",
+  blue: "var(--label-blue, #6ca7e8)",
+  purple: "var(--label-purple, #a881d8)",
 };
 const builtInExportRecipes: ExportRecipe[] = [
   {
@@ -1289,8 +1392,12 @@ function localFilter(a: LocalAdjustments) {
     a.clarity / 260 +
     a.dehaze / 300 +
     (a.curveHighlights - a.curveShadows) / 360;
-  const saturation = a.saturation / 100 + a.vibrance / 140;
-  const blur = Math.max(0, a.noise / 180 - a.sharpness / 650 - a.texture / 900);
+  const saturation =
+    a.saturation / 100 + a.vibrance / 140 - Math.max(0, a.moire) / 320;
+  const blur = Math.max(
+    0,
+    a.noise / 180 + Math.max(0, a.moire) / 900 - a.sharpness / 650 - a.texture / 900,
+  );
   return `brightness(${Math.max(0.15, Math.pow(2, light))}) contrast(${Math.max(0.2, 1 + contrast)}) saturate(${Math.max(0, 1 + saturation)}) sepia(${Math.abs(a.temperature) / 650}) hue-rotate(${a.hue + (a.temperature < 0 ? -a.temperature / 18 : 0) + a.tint / 30}deg) blur(${blur}px)`;
 }
 
@@ -1309,6 +1416,39 @@ async function maskAlphaAtSize(dataUrl: string, width: number, height: number) {
   for (let pixel = 0; pixel < alpha.length; pixel++)
     alpha[pixel] = pixels[pixel * 4 + 3] / 255;
   return alpha;
+}
+
+async function refineMaskDataUrl(
+  dataUrl: string,
+  edge: number,
+  feather: number,
+) {
+  const image = new Image();
+  image.src = dataUrl;
+  await image.decode();
+  const source = document.createElement("canvas");
+  source.width = image.naturalWidth;
+  source.height = image.naturalHeight;
+  const sourceContext = source.getContext("2d", { willReadFrequently: true });
+  if (!sourceContext) throw new Error("Mask refinement is unavailable");
+  sourceContext.drawImage(image, 0, 0);
+  const pixels = sourceContext.getImageData(0, 0, source.width, source.height);
+  const alpha = new Uint8ClampedArray(source.width * source.height);
+  for (let index = 0; index < alpha.length; index++)
+    alpha[index] = pixels.data[index * 4 + 3];
+  const refined = refineMaskAlpha(alpha, source.width, source.height, edge);
+  for (let index = 0; index < refined.length; index++)
+    pixels.data[index * 4 + 3] = refined[index];
+  sourceContext.putImageData(pixels, 0, 0);
+  if (!feather) return source.toDataURL("image/png");
+  const output = document.createElement("canvas");
+  output.width = source.width;
+  output.height = source.height;
+  const outputContext = output.getContext("2d");
+  if (!outputContext) throw new Error("Mask feathering is unavailable");
+  outputContext.filter = `blur(${Math.max(0.5, feather)}px)`;
+  outputContext.drawImage(source, 0, 0);
+  return output.toDataURL("image/png");
 }
 
 async function buildLinearRawExport(
@@ -1381,7 +1521,8 @@ function applyComputationalCorrections(
     adjustments.highlightRecovery <= 0 &&
     adjustments.hotPixelRepair <= 0 &&
     adjustments.dustRemoval <= 0 &&
-    adjustments.moireReduction <= 0
+    adjustments.moireReduction <= 0 &&
+    adjustments.glareReduction === 0
   )
     return;
   const width = context.canvas.width;
@@ -1394,6 +1535,11 @@ function applyComputationalCorrections(
     adjustments.dustRemoval / 150,
   );
   const moire = adjustments.moireReduction / 100;
+  const reflection = adjustments.glareReduction / 100;
+  const sampleRadius = Math.max(
+    1,
+    Math.min(3, Math.round(adjustments.reflectionQuality || 2)),
+  );
   for (let y = 1; y < height - 1; y++) {
     for (let x = 1; x < width - 1; x++) {
       const offset = (y * width + x) * 4;
@@ -1432,6 +1578,52 @@ function applyComputationalCorrections(
               image.data[offset + channel] * (1 - moire * 0.35) +
                 neighbors[channel] * moire * 0.35,
             );
+      }
+      if (reflection !== 0) {
+        const reflectionNeighbors = [0, 1, 2].map(
+          (channel) => {
+            const sample = (sx: number, sy: number) =>
+              source[
+                (Math.max(0, Math.min(height - 1, sy)) * width +
+                  Math.max(0, Math.min(width - 1, sx))) *
+                  4 +
+                  channel
+              ];
+            return (
+              (sample(x - sampleRadius, y) +
+                sample(x + sampleRadius, y) +
+                sample(x, y - sampleRadius) +
+                sample(x, y + sampleRadius)) /
+              4
+            );
+          },
+        );
+        const localLuma =
+          (source[offset] + source[offset + 1] + source[offset + 2]) / 3;
+        const neighborLuma =
+          (reflectionNeighbors[0] +
+            reflectionNeighbors[1] +
+            reflectionNeighbors[2]) /
+          3;
+        const reflectedVeil = Math.max(0, localLuma - neighborLuma * 0.82);
+        for (let channel = 0; channel < 3; channel++) {
+          const value = image.data[offset + channel];
+          image.data[offset + channel] = Math.round(
+            reflection > 0
+              ? Math.max(
+                  0,
+                  value - reflectedVeil * reflection * 0.72 +
+                    (value - localLuma) * reflection * 0.18,
+                )
+              : Math.min(
+                  255,
+                  neighborLuma +
+                    Math.max(0, value - reflectionNeighbors[channel]) *
+                      Math.abs(reflection) *
+                      2.2,
+                ),
+          );
+        }
       }
     }
   }
@@ -1509,6 +1701,10 @@ async function analyzeImportFile(
           0.0722 * pixels.data[i + 2],
       );
     let focus = 0,
+      centerFocus = 0,
+      centerCount = 0,
+      edgeFocus = 0,
+      edgeCount = 0,
       exposure = 0,
       count = 0;
     for (let y = 1; y < canvas.height - 1; y++)
@@ -1522,6 +1718,18 @@ async function analyzeImportFile(
             4 * grayscale[index],
         );
         focus += laplacian;
+        const central =
+          x > canvas.width * 0.24 &&
+          x < canvas.width * 0.76 &&
+          y > canvas.height * 0.24 &&
+          y < canvas.height * 0.76;
+        if (central) {
+          centerFocus += laplacian;
+          centerCount++;
+        } else {
+          edgeFocus += laplacian;
+          edgeCount++;
+        }
         exposure +=
           100 - Math.min(100, Math.abs(grayscale[index] - 128) / 1.28);
         count++;
@@ -1547,21 +1755,53 @@ async function analyzeImportFile(
       }
     }
     let faces = 0;
+    let faceScores: number[] = [];
     const Detector = (
       window as unknown as {
         FaceDetector?: new (options?: {
           fastMode?: boolean;
           maxDetectedFaces?: number;
-        }) => { detect: (source: CanvasImageSource) => Promise<unknown[]> };
+        }) => {
+          detect: (source: CanvasImageSource) => Promise<
+            Array<{ boundingBox?: DOMRectReadOnly }>
+          >;
+        };
       }
     ).FaceDetector;
     if (Detector) {
       try {
-        faces = (
-          await new Detector({ fastMode: true, maxDetectedFaces: 12 }).detect(
-            canvas,
-          )
-        ).length;
+        const detected = await new Detector({
+          fastMode: true,
+          maxDetectedFaces: 12,
+        }).detect(canvas);
+        faces = detected.length;
+        const overallFocus = Math.min(
+          100,
+          (focus / Math.max(1, count)) * 4,
+        );
+        faceScores = detected.map((face) => {
+          const box = face.boundingBox;
+          if (!box) return overallFocus;
+          let local = 0;
+          let samples = 0;
+          const startX = Math.max(1, Math.floor(box.x));
+          const endX = Math.min(canvas.width - 1, Math.ceil(box.x + box.width));
+          const startY = Math.max(1, Math.floor(box.y));
+          const endY = Math.min(canvas.height - 1, Math.ceil(box.y + box.height));
+          for (let y = startY; y < endY; y += 2)
+            for (let x = startX; x < endX; x += 2) {
+              const index = y * canvas.width + x;
+              local += Math.abs(
+                grayscale[index - 1] +
+                  grayscale[index + 1] +
+                  grayscale[index - canvas.width] +
+                  grayscale[index + canvas.width] -
+                  4 * grayscale[index],
+              );
+              samples++;
+            }
+          return Math.min(100, (local / Math.max(1, samples)) * 4);
+        });
       } catch {
         faces = 0;
       }
@@ -1573,6 +1813,25 @@ async function analyzeImportFile(
         exposure: exposure / Math.max(1, count),
         faces,
         similarity: 0,
+        faceScores,
+        subject: Math.min(
+          100,
+          (centerFocus / Math.max(1, centerCount)) * 4,
+        ),
+        blur: Math.max(
+          0,
+          100 - Math.min(100, (focus / Math.max(1, count)) * 4),
+        ),
+        shallowDepth: Math.min(
+          100,
+          Math.max(
+            0,
+            ((centerFocus / Math.max(1, centerCount) -
+              edgeFocus / Math.max(1, edgeCount)) /
+              8) *
+              100,
+          ),
+        ),
       },
     };
   } finally {
@@ -1952,6 +2211,7 @@ export default function Home() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [folderFilter, setFolderFilter] = useState<string | null>(null);
+  const [monthFilter, setMonthFilter] = useState<string | null>(null);
   const [filter, setFilter] = useState<
     "all" | "flagged" | "rated" | "edited" | "rejected" | "duplicates" | "best"
   >("all");
@@ -1963,6 +2223,17 @@ export default function Home() {
   >("grid");
   const [minRating, setMinRating] = useState(0);
   const [labelFilter, setLabelFilter] = useState<Label>("none");
+  const [cullPreferences, setCullPreferences] = useState<CullPreferences>(() => {
+    if (typeof window === "undefined") return defaultCullPreferences;
+    try {
+      return {
+        ...defaultCullPreferences,
+        ...JSON.parse(localStorage.getItem("librelux-cull-preferences") ?? "{}"),
+      };
+    } catch {
+      return defaultCullPreferences;
+    }
+  });
   const [compareMode, setCompareMode] = useState<
     "edited" | "original" | "split" | "side" | "reference"
   >("edited");
@@ -1977,6 +2248,7 @@ export default function Home() {
   const [exportOpen, setExportOpen] = useState(false);
   const [progressOpen, setProgressOpen] = useState(false);
   const [progressJobs, setProgressJobs] = useState<ProgressJob[]>([]);
+  const progressJobsLoaded = useRef(false);
   const cancelJobsRef = useRef(false);
   const pauseJobsRef = useRef(false);
   const [exportQuality, setExportQuality] = useState(92);
@@ -2018,6 +2290,7 @@ export default function Home() {
   const [maskTarget, setMaskTarget] = useState<MaskTarget | null>(null);
   const [maskTolerance, setMaskTolerance] = useState(28);
   const [maskFeather, setMaskFeather] = useState(6);
+  const [maskEdge, setMaskEdge] = useState(0);
   const [maskBrushSize, setMaskBrushSize] = useState(24);
   const [maskBrushFlow, setMaskBrushFlow] = useState(75);
   const [maskBrushDensity, setMaskBrushDensity] = useState(100);
@@ -2075,7 +2348,9 @@ export default function Home() {
     SpectralFilmProfile[]
   >([]);
   const catalogImportRef = useRef<HTMLInputElement>(null);
+  const publishServiceRef = useRef<HTMLInputElement>(null);
   const [catalogStatus, setCatalogStatus] = useState("");
+  const [publishServices, setPublishServices] = useState<PublishService[]>([]);
   const [watchDirectory, setWatchDirectory] =
     useState<StoredDirectoryHandle | null>(null);
   const [watchStatus, setWatchStatus] = useState("");
@@ -2090,10 +2365,20 @@ export default function Home() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [tetherOpen, setTetherOpen] = useState(false);
   const [tetherStream, setTetherStream] = useState<MediaStream | null>(null);
+  const [tetherControls, setTetherControls] = useState({
+    exposure: 0,
+    whiteBalance: 5000,
+    focus: 0,
+    zoom: 1,
+  });
+  const [tetherCapabilities, setTetherCapabilities] = useState<
+    Record<string, { min?: number; max?: number; step?: number }>
+  >({});
   const tetherVideoRef = useRef<HTMLVideoElement>(null);
   const [slideshowOpen, setSlideshowOpen] = useState(false);
   const [videoLabOpen, setVideoLabOpen] = useState(false);
   const [slideshowIndex, setSlideshowIndex] = useState(0);
+  const [slideshowMusic, setSlideshowMusic] = useState("");
   const [proofProfile, setProofProfile] = useState<ColorSpace>("srgb");
   const [softProof, setSoftProof] = useState(false);
   const [gamutWarnings, setGamutWarnings] = useState(false);
@@ -2102,24 +2387,16 @@ export default function Home() {
   const [retouchFeather, setRetouchFeather] = useState(55);
   const duplicateIds = useMemo(() => {
     const ids = new Set<string>();
-    const hamming = (a: string, b: string) => {
-      if (!a || a.length !== b.length) return Infinity;
-      let distance = 0;
-      for (let i = 0; i < a.length; i++) {
-        let value = parseInt(a[i], 16) ^ parseInt(b[i], 16);
-        while (value) {
-          distance += value & 1;
-          value >>= 1;
-        }
-      }
-      return distance;
-    };
     photos.forEach((photo, index) =>
       photos.slice(index + 1).forEach((other) => {
         const exact =
           photo.name.toLowerCase() === other.name.toLowerCase() &&
           photo.size === other.size;
-        if (exact || hamming(photo.perceptualHash, other.perceptualHash) <= 8) {
+        if (
+          exact ||
+          perceptualHashDistance(photo.perceptualHash, other.perceptualHash) <=
+            8
+        ) {
           ids.add(photo.id);
           ids.add(other.id);
         }
@@ -2151,12 +2428,24 @@ export default function Home() {
     () => [...new Set(photos.map((photo) => photo.folder))].sort(),
     [photos],
   );
+  const captureMonths = useMemo(
+    () =>
+      [...new Set(
+        photos
+          .map((photo) => photo.metadata.capturedAt || new Date(photo.createdAt).toISOString())
+          .map((value) => value.slice(0, 7))
+          .filter(Boolean),
+      )].sort().reverse(),
+    [photos],
+  );
   const activeAlbum = albums.find((album) => album.id === activeAlbumId);
   const albumIncludes = (album: AlbumRecord | undefined, photo: RuntimePhoto) =>
     !album ||
     album.kind === "set" ||
     (album.kind === "smart"
-      ? album.rule === "five-stars"
+      ? album.advancedRule
+        ? matchesSmartAlbum(photo, album.advancedRule)
+        : album.rule === "five-stars"
         ? photo.rating === 5
         : album.rule === "flagged"
           ? photo.flagged
@@ -2171,6 +2460,10 @@ export default function Home() {
           (p) =>
             albumIncludes(activeAlbum, p) &&
             (!folderFilter || p.folder === folderFilter) &&
+            (!monthFilter ||
+              (p.metadata.capturedAt || new Date(p.createdAt).toISOString()).startsWith(
+                monthFilter,
+              )) &&
             [
               p.name,
               p.metadata.title,
@@ -2193,8 +2486,8 @@ export default function Home() {
               (filter === "rejected" && p.rejected) ||
               (filter === "duplicates" && duplicateIds.has(p.id)) ||
               (filter === "best" &&
-                p.cull.focus >= 45 &&
-                p.cull.exposure >= 55) ||
+                evaluateCull(detailedCullScores(p.cull), cullPreferences)
+                  .decision !== "reject") ||
               (filter === "edited" &&
                 JSON.stringify(p.adjustments) !== JSON.stringify(defaults))),
         )
@@ -2219,6 +2512,8 @@ export default function Home() {
       duplicateIds,
       activeAlbum,
       folderFilter,
+      monthFilter,
+      cullPreferences,
     ],
   );
   const referencePhoto =
@@ -2282,6 +2577,7 @@ export default function Home() {
                   similarity: 0,
                 },
                 stackId: p.stackId ?? null,
+                stackCover: p.stackCover ?? false,
                 missing,
                 processVersion: p.processVersion ?? "2026",
                 previewBlob: p.previewBlob ?? null,
@@ -2296,6 +2592,7 @@ export default function Home() {
                 reviewLikes: p.reviewLikes ?? [],
                 masks: (p.masks ?? []).map((mask) => ({
                   ...mask,
+                  edge: mask.edge ?? 0,
                   visible: mask.visible ?? true,
                   inverted: mask.inverted ?? false,
                   overlayColor: mask.overlayColor ?? "#b6f36b",
@@ -2377,6 +2674,7 @@ export default function Home() {
         hidden: string[];
         solo: boolean;
       }>("panel-workspace"),
+      readSetting<PublishService[]>("publish-services"),
     ])
       .then(
         ([
@@ -2388,6 +2686,7 @@ export default function Home() {
           importPreset,
           prefs,
           panelWorkspace,
+          savedPublishServices,
         ]) => {
           if (savedAlbums)
             setAlbums(
@@ -2446,6 +2745,7 @@ export default function Home() {
             setHiddenPanels(panelWorkspace.hidden ?? []);
             setSoloPanels(Boolean(panelWorkspace.solo));
           }
+          if (savedPublishServices) setPublishServices(savedPublishServices);
         },
       )
       .catch(() => undefined);
@@ -2460,6 +2760,25 @@ export default function Home() {
     return () => {
       delete document.documentElement.dataset.libreluxReady;
     };
+  }, []);
+  useEffect(() => {
+    if (progressJobsLoaded.current)
+      void saveSetting("progress-jobs", progressJobs);
+  }, [progressJobs]);
+  useEffect(() => {
+    readSetting<ProgressJob[]>("progress-jobs")
+      .then((jobs) => {
+        if (jobs?.length)
+          setProgressJobs(
+            jobs.map((job) =>
+              job.status === "running" || job.status === "queued"
+                ? { ...job, status: "paused" }
+                : job,
+            ),
+          );
+      })
+      .catch(() => undefined);
+    progressJobsLoaded.current = true;
   }, []);
   useEffect(() => {
     queueMicrotask(() => {
@@ -2778,6 +3097,7 @@ export default function Home() {
             perceptualHash: analysis.perceptualHash,
             cull: analysis.cull,
             stackId: null,
+            stackCover: false,
             missing: false,
             processVersion: "2026",
             previewBlob,
@@ -2863,6 +3183,12 @@ export default function Home() {
         audio: false,
       });
       setTetherStream(stream);
+      const track = stream.getVideoTracks()[0];
+      const capabilities = track?.getCapabilities?.() as unknown as Record<
+        string,
+        { min?: number; max?: number; step?: number }
+      >;
+      setTetherCapabilities(capabilities ?? {});
       setTetherOpen(true);
       window.setTimeout(() => {
         if (tetherVideoRef.current) {
@@ -2874,6 +3200,30 @@ export default function Home() {
       setCatalogStatus("Camera access was not available");
     }
   }, []);
+  const setTetherConstraint = async (
+    key: "exposureCompensation" | "colorTemperature" | "focusDistance" | "zoom",
+    value: number,
+  ) => {
+    const track = tetherStream?.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      await track.applyConstraints({
+        advanced: [{ [key]: value }],
+      } as MediaTrackConstraints);
+      setTetherControls((current) => ({
+        ...current,
+        [key === "exposureCompensation"
+          ? "exposure"
+          : key === "colorTemperature"
+            ? "whiteBalance"
+            : key === "focusDistance"
+              ? "focus"
+              : "zoom"]: value,
+      }));
+    } catch {
+      setCatalogStatus(`${key} is not controllable on this camera/browser`);
+    }
+  };
   const stopTetheredCapture = useCallback(() => {
     tetherStream?.getTracks().forEach((track) => track.stop());
     setTetherStream(null);
@@ -3073,7 +3423,10 @@ export default function Home() {
     }, "image/png");
   };
   const exportLocalLayout = useCallback(
-    async (kind: "gallery" | "book", share = false) => {
+    async (
+      kind: "gallery" | "book" | "slideshow" | "print",
+      share = false,
+    ) => {
       const targets = photos.filter((photo) =>
         (selectedIds.length
           ? selectedIds
@@ -3098,7 +3451,12 @@ export default function Home() {
             `<figure><img src="${dataUrls[index]}" alt=""><figcaption>${escapeXml(photo.metadata.title || photo.name)}</figcaption></figure>`,
         )
         .join("");
-      const html = `<!doctype html><meta charset="utf-8"><title>LibreLux ${kind}</title><style>body{font:16px system-ui;margin:0;padding:32px;background:#111;color:#eee}main{display:grid;grid-template-columns:${kind === "book" ? "1fr" : "repeat(auto-fit,minmax(260px,1fr))"};gap:24px;max-width:1200px;margin:auto}figure{margin:0;${kind === "book" ? "page-break-after:always;min-height:90vh;display:grid;place-items:center" : ""}}img{max-width:100%;max-height:82vh;display:block;margin:auto}figcaption{text-align:center;margin-top:10px}</style><main>${items}</main>`;
+      const slideshowScript =
+        kind === "slideshow"
+          ? `<script>const slides=[...document.querySelectorAll('figure')];let i=0;function show(n){slides.forEach((s,j)=>s.hidden=j!==n);document.querySelector('output').textContent=(n+1)+' / '+slides.length}show(0);addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){i=(i+1)%slides.length;show(i)}if(e.key==='ArrowLeft'){i=(i-1+slides.length)%slides.length;show(i)}});setInterval(()=>{i=(i+1)%slides.length;show(i)},5000)</script>`
+          : "";
+      const paged = kind === "book" || kind === "print";
+      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LibreLux ${kind}</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{font:16px system-ui;margin:0;padding:${kind === "slideshow" ? "0" : "clamp(16px,4vw,48px)"};background:#101310;color:#eef3ee}main{display:grid;grid-template-columns:${paged || kind === "slideshow" ? "1fr" : "repeat(auto-fit,minmax(min(100%,260px),1fr))"};gap:24px;max-width:${kind === "slideshow" ? "none" : "1200px"};margin:auto}figure{margin:0;${paged ? "break-after:page;min-height:92vh;display:grid;place-items:center" : kind === "slideshow" ? "height:100vh;display:grid;place-items:center;background:#080a08" : "background:#171b17;border-radius:12px;overflow:hidden;padding:10px"}}img{max-width:100%;max-height:${kind === "slideshow" ? "92vh" : "82vh"};display:block;margin:auto}figcaption{text-align:center;margin-top:10px;color:#bac5ba}${kind === "slideshow" ? "output{position:fixed;right:18px;bottom:16px;background:#0009;padding:8px 12px;border-radius:99px}" : ""}@page{size:auto;margin:12mm}@media print{body{background:white;color:black;padding:0}figure{break-inside:avoid}figcaption{color:#333}}</style></head><body><main>${items}</main>${kind === "slideshow" ? "<output></output>" : ""}${slideshowScript}</body></html>`;
       const blob = new Blob([html], { type: "text/html" });
       const file = new File([blob], `LibreLux-${kind}.html`, {
         type: "text/html",
@@ -3112,6 +3470,11 @@ export default function Home() {
         return;
       }
       const url = URL.createObjectURL(blob);
+      if (kind === "print") {
+        window.open(url, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        return;
+      }
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `LibreLux-${kind}.html`;
@@ -3120,6 +3483,57 @@ export default function Home() {
     },
     [photos, selectedIds],
   );
+  const importPublishService = async (file?: File) => {
+    if (!file) return;
+    try {
+      const source = JSON.parse(await file.text()) as Partial<PublishService>;
+      const endpoint = new URL(String(source.endpoint ?? ""));
+      if (endpoint.protocol !== "https:")
+        throw new Error("Publish services must use HTTPS");
+      const service: PublishService = {
+        id: String(source.id ?? crypto.randomUUID()),
+        name: String(source.name ?? endpoint.hostname).slice(0, 48),
+        endpoint: endpoint.toString(),
+        method: source.method === "PUT" ? "PUT" : "POST",
+      };
+      const next = [
+        ...publishServices.filter((item) => item.id !== service.id),
+        service,
+      ];
+      setPublishServices(next);
+      await saveSetting("publish-services", next);
+      setCatalogStatus(`${service.name} publish service installed locally`);
+    } catch (error) {
+      setCatalogStatus(
+        error instanceof Error ? error.message : "Invalid publish service",
+      );
+    }
+  };
+  const publishSelection = async (service: PublishService) => {
+    const targets = photos.filter((photo) =>
+      (selectedIds.length ? selectedIds : selectedId ? [selectedId] : []).includes(
+        photo.id,
+      ),
+    );
+    if (!targets.length) return;
+    if (
+      !window.confirm(
+        `Send ${targets.length} selected photo${targets.length === 1 ? "" : "s"} to ${service.name}?`,
+      )
+    )
+      return;
+    for (const photo of targets) {
+      const body = new FormData();
+      body.append("file", photo.displayBlob ?? photo.blob, photo.name);
+      body.append("metadata", JSON.stringify(photo.metadata));
+      const response = await fetch(service.endpoint, {
+        method: service.method,
+        body,
+      });
+      if (!response.ok) throw new Error(`${service.name} returned ${response.status}`);
+    }
+    setCatalogStatus(`Published ${targets.length} photo${targets.length === 1 ? "" : "s"} to ${service.name}`);
+  };
   const handoffPsd = async (openLibreLayer = false) => {
     if (!selected) return;
     const { writePsd } = await import("ag-psd");
@@ -4190,6 +4604,33 @@ export default function Home() {
     persistAlbums([...albums, album]);
     setActiveAlbumId(album.id);
   };
+  const createAdvancedSmartAlbum = () => {
+    const album: AlbumRecord = {
+      id: crypto.randomUUID(),
+      name: `Smart selects ${albums.filter((item) => item.kind === "smart").length + 1}`,
+      photoIds: [],
+      createdAt: Date.now(),
+      kind: "smart",
+      parentId: null,
+      rule: null,
+      target: false,
+      advancedRule: {
+        op: "or",
+        rules: [
+          {
+            op: "and",
+            rules: [
+              { field: "rating", operator: "at-least", value: 4 },
+              { field: "rejected", operator: "equals", value: false },
+            ],
+          },
+          { field: "flagged", operator: "equals", value: true },
+        ],
+      },
+    };
+    persistAlbums([...albums, album]);
+    setActiveAlbumId(album.id);
+  };
   const setTargetAlbum = (id: string) =>
     persistAlbums(
       albums.map((album) => ({ ...album, target: album.id === id })),
@@ -4204,21 +4645,52 @@ export default function Home() {
           ? Date.parse(b.metadata.capturedAt)
           : b.createdAt),
     );
-    let previousTime = 0,
-      currentStack = "";
-    const ids = new Map<string, string | null>();
-    ordered.forEach((photo) => {
+    let currentGroup: RuntimePhoto[] = [];
+    const groups: RuntimePhoto[][] = [];
+    ordered.forEach((photo, index) => {
       const time = photo.metadata.capturedAt
         ? Date.parse(photo.metadata.capturedAt)
         : photo.createdAt;
-      if (!previousTime || time - previousTime > 2500)
-        currentStack = crypto.randomUUID();
-      ids.set(photo.id, currentStack);
-      previousTime = time;
+      const previous = ordered[index - 1];
+      const previousTime = previous
+        ? previous.metadata.capturedAt
+          ? Date.parse(previous.metadata.capturedAt)
+          : previous.createdAt
+        : 0;
+      const visuallyRelated =
+        previous &&
+        perceptualHashDistance(photo.perceptualHash, previous.perceptualHash) <=
+          18;
+      if (!previous || time - previousTime > 30000 || !visuallyRelated) {
+        if (currentGroup.length) groups.push(currentGroup);
+        currentGroup = [];
+      }
+      currentGroup.push(photo);
+    });
+    if (currentGroup.length) groups.push(currentGroup);
+    const ids = new Map<string, string | null>();
+    const covers = new Set<string>();
+    groups.forEach((group) => {
+      if (group.length < 2) {
+        ids.set(group[0].id, null);
+        return;
+      }
+      const stackId = crypto.randomUUID();
+      group.forEach((photo) => ids.set(photo.id, stackId));
+      const cover = [...group].sort(
+        (a, b) =>
+          evaluateCull(detailedCullScores(b.cull), cullPreferences).score -
+          evaluateCull(detailedCullScores(a.cull), cullPreferences).score,
+      )[0];
+      covers.add(cover.id);
     });
     setPhotos((current) =>
       current.map((photo) => {
-        const next = { ...photo, stackId: ids.get(photo.id) ?? null };
+        const next = {
+          ...photo,
+          stackId: ids.get(photo.id) ?? null,
+          stackCover: covers.has(photo.id),
+        };
         void savePhoto(next);
         return next;
       }),
@@ -4439,6 +4911,15 @@ export default function Home() {
       ...photo,
       snapshots: photo.snapshots.filter((snapshot) => snapshot.id !== id),
     }));
+  const renameDevelopSnapshot = (id: string, name: string) =>
+    updateSelected((photo) => ({
+      ...photo,
+      snapshots: photo.snapshots.map((snapshot) =>
+        snapshot.id === id
+          ? { ...snapshot, name: name.trim() || snapshot.name }
+          : snapshot,
+      ),
+    }));
   const addEffectLayer = (
     name: string,
     settings: Partial<Adjustments>,
@@ -4517,6 +4998,64 @@ export default function Home() {
       },
     }));
     setCatalogStatus(`Applied ${spots.length}-spot dust map for ${camera}`);
+  };
+  const detectSensorDust = async () => {
+    if (!selected) return;
+    const { canvas, pixels } = await readImagePixels(selected.url, 320);
+    const candidates: Array<{ x: number; y: number; strength: number }> = [];
+    for (let y = 3; y < canvas.height - 3; y += 2)
+      for (let x = 3; x < canvas.width - 3; x += 2) {
+        const offset = (y * canvas.width + x) * 4;
+        const luma =
+          pixels.data[offset] * 0.2126 +
+          pixels.data[offset + 1] * 0.7152 +
+          pixels.data[offset + 2] * 0.0722;
+        const around = [
+          offset - 12,
+          offset + 12,
+          offset - canvas.width * 12,
+          offset + canvas.width * 12,
+        ].reduce(
+          (sum, point) =>
+            sum +
+            pixels.data[point] * 0.2126 +
+            pixels.data[point + 1] * 0.7152 +
+            pixels.data[point + 2] * 0.0722,
+          0,
+        ) / 4;
+        const strength = around - luma;
+        if (strength > 34 && around > 55) candidates.push({ x, y, strength });
+      }
+    const chosen = candidates
+      .sort((a, b) => b.strength - a.strength)
+      .filter(
+        (candidate, index, all) =>
+          all.slice(0, index).every(
+            (other) => Math.hypot(candidate.x - other.x, candidate.y - other.y) > 12,
+          ),
+      )
+      .slice(0, 24);
+    updateSelected((photo) => ({
+      ...photo,
+      retouchSpots: [
+        ...photo.retouchSpots,
+        ...chosen.map((candidate) => ({
+          id: crypto.randomUUID(),
+          mode: "remove" as const,
+          x: candidate.x / canvas.width,
+          y: candidate.y / canvas.height,
+          sourceX: Math.min(1, (candidate.x + 12) / canvas.width),
+          sourceY: candidate.y / canvas.height,
+          size: 2.5,
+          feather: 72,
+        })),
+      ],
+    }));
+    setCatalogStatus(
+      chosen.length
+        ? `${chosen.length} possible dust spots added for individual review`
+        : "No strong dust candidates found",
+    );
   };
   const updateMask = (id: string, updater: (mask: MaskRecord) => MaskRecord) =>
     updateSelected((photo) => ({
@@ -4911,8 +5450,9 @@ export default function Home() {
       .replaceAll("{date}", new Date().toISOString().slice(0, 10))
       .replaceAll("{rating}", String(photo.rating))
       .replace(/[^a-z0-9._ -]/gi, "-") || "LibreLux-export";
-  const doExport = async () => {
+  const doExport = async (formatOverride?: ExportFormat) => {
     if (!selected) return;
+    const targetFormat = formatOverride ?? exportFormat;
     const image = new Image();
     image.src = selected.url;
     await image.decode();
@@ -5249,6 +5789,9 @@ export default function Home() {
       canvas.width,
       canvas.height,
       selected.adjustments.lensBlur,
+      selected.adjustments.lensBlurFocus,
+      selected.adjustments.lensBlurHighlights,
+      selected.adjustments.lensBlurBokeh,
     );
     applyComputationalCorrections(ctx, selected.adjustments);
     applyFilmGrain(
@@ -5354,8 +5897,8 @@ export default function Home() {
     }
     if (
       proofProfile !== "srgb" &&
-      exportFormat !== "tiff" &&
-      exportFormat !== "dng"
+      targetFormat !== "tiff" &&
+      targetFormat !== "dng"
     )
       ctx.putImageData(
         convertImageColorSpace(
@@ -5366,16 +5909,16 @@ export default function Home() {
         0,
       );
     const mime =
-      exportFormat === "png"
+      targetFormat === "png"
         ? "image/png"
-        : exportFormat === "webp"
+        : targetFormat === "webp"
           ? "image/webp"
-          : exportFormat === "avif"
+          : targetFormat === "avif"
             ? "image/avif"
             : "image/jpeg";
     let blob: Blob | null;
     const highBitRawExport =
-      (exportFormat === "tiff" || exportFormat === "dng") &&
+      (targetFormat === "tiff" || targetFormat === "dng") &&
       isRawFile({ name: selected.name }) &&
       selected.retouchSpots.length === 0 &&
       !watermark.trim() &&
@@ -5396,7 +5939,7 @@ export default function Home() {
         );
         blob = encodeLinearRgb16(
           linear,
-          exportFormat === "tiff" ? "tiff16" : "dng16",
+          targetFormat === "tiff" ? "tiff16" : "dng16",
           proofProfile,
           selected.metadata.camera,
         );
@@ -5406,15 +5949,15 @@ export default function Home() {
         );
         blob = encodeRgb16(
           ctx.getImageData(0, 0, canvas.width, canvas.height),
-          exportFormat === "tiff" ? "tiff16" : "dng16",
+          targetFormat === "tiff" ? "tiff16" : "dng16",
           proofProfile,
           selected.metadata.camera,
         );
       }
-    } else if (exportFormat === "tiff" || exportFormat === "dng") {
+    } else if (targetFormat === "tiff" || targetFormat === "dng") {
       blob = encodeRgb16(
         ctx.getImageData(0, 0, canvas.width, canvas.height),
-        exportFormat === "tiff" ? "tiff16" : "dng16",
+        targetFormat === "tiff" ? "tiff16" : "dng16",
         proofProfile,
         selected.metadata.camera,
       );
@@ -5454,7 +5997,7 @@ export default function Home() {
         )
       : null;
     if (exportDirectory) {
-      const extension = exportFormat === "jpeg" ? "jpg" : exportFormat;
+      const extension = targetFormat === "jpeg" ? "jpg" : targetFormat;
       const fileName = `${renderedExportName(selected)}.${extension}`;
       let permission =
         (await exportDirectory.queryPermission?.({ mode: "readwrite" })) ??
@@ -5488,7 +6031,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    const extension = exportFormat === "jpeg" ? "jpg" : exportFormat;
+    const extension = targetFormat === "jpeg" ? "jpg" : targetFormat;
     link.download = `${renderedExportName(selected)}.${extension}`;
     link.click();
     if (metadataBlob) {
@@ -5580,6 +6123,9 @@ export default function Home() {
           canvas.width,
           canvas.height,
           photo.adjustments.lensBlur,
+          photo.adjustments.lensBlurFocus,
+          photo.adjustments.lensBlurHighlights,
+          photo.adjustments.lensBlurBokeh,
         );
         applyComputationalCorrections(context, photo.adjustments);
         applyFilmGrain(
@@ -5653,14 +6199,23 @@ export default function Home() {
         }
         if (!blob) throw new Error("Export encoding failed");
         const extension = exportFormat === "jpeg" ? "jpg" : exportFormat;
-        const name = `${renderedExportName(photo)}.${extension}`;
+        let name = `${renderedExportName(photo)}.${extension}`;
         if (exportDirectory) {
+          if (exportDirectory.values) {
+            const existing: string[] = [];
+            for await (const entry of exportDirectory.values())
+              if (entry.kind === "file" && entry.name) existing.push(entry.name);
+            name = availableCollisionName(name, existing);
+          }
           const handle = await exportDirectory.getFileHandle(name, {
             create: true,
           });
           const writable = await handle.createWritable();
           await writable.write(blob);
           await writable.close();
+          const written = await handle.getFile?.();
+          if (written && written.size !== blob.size)
+            throw new Error("Export verification failed");
         } else {
           const url = URL.createObjectURL(blob);
           const anchor = document.createElement("a");
@@ -5769,6 +6324,16 @@ export default function Home() {
         accept=".libreluxcat,application/x-librelux-catalog"
         hidden
         onChange={(event) => void restoreCatalog(event.target.files?.[0])}
+      />
+      <input
+        ref={publishServiceRef}
+        type="file"
+        accept=".json,application/json"
+        hidden
+        onChange={(event) => {
+          void importPublishService(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
       />
       <input
         ref={folderRef}
@@ -6037,6 +6602,24 @@ export default function Home() {
             <button onClick={() => void exportLocalLayout("book")}>
               <BookOpen /> Photo-book layout
             </button>
+            <button onClick={() => void exportLocalLayout("print")}>
+              <BookOpen /> Print workspace / PDF
+            </button>
+            <button onClick={() => void exportLocalLayout("slideshow")}>
+              <Download /> Export slideshow
+            </button>
+            <button onClick={() => publishServiceRef.current?.click()}>
+              <Plus /> Install publish service
+            </button>
+            {publishServices.map((service) => (
+              <button
+                key={service.id}
+                onClick={() => void publishSelection(service)}
+                disabled={!selected}
+              >
+                <ArrowDownToLine /> Publish to {service.name}
+              </button>
+            ))}
             <button onClick={() => void handoffPsd(false)} disabled={!selected}>
               <Download /> Export layered PSD
             </button>
@@ -6065,6 +6648,35 @@ export default function Home() {
               <SlidersHorizontal /> Video lab
             </button>
           </nav>
+          {!!captureMonths.length && (
+            <>
+              <div className="section-title">
+                <span>Calendar</span>
+              </div>
+              <nav className="source-list compact" aria-label="Capture month">
+                <button
+                  className={monthFilter === null ? "selected" : ""}
+                  onClick={() => setMonthFilter(null)}
+                >
+                  <span>All dates</span>
+                </button>
+                {captureMonths.slice(0, 18).map((month) => (
+                  <button
+                    key={month}
+                    className={monthFilter === month ? "selected" : ""}
+                    onClick={() => setMonthFilter(monthFilter === month ? null : month)}
+                  >
+                    <span>
+                      {new Date(`${month}-01T12:00:00`).toLocaleDateString(undefined, {
+                        month: "long",
+                        year: "numeric",
+                      })}
+                    </span>
+                  </button>
+                ))}
+              </nav>
+            </>
+          )}
           {catalogStatus && (
             <p className="catalog-status" role="status" aria-live="polite">
               {catalogStatus}
@@ -6124,6 +6736,7 @@ export default function Home() {
             <button onClick={() => createCollection("smart", "people")}>
               People
             </button>
+            <button onClick={createAdvancedSmartAlbum}>Nested smart</button>
           </div>
           <div className="album-list">
             <div>
@@ -6364,7 +6977,7 @@ export default function Home() {
             </div>
           )}
           {workspace === "library" ? (
-            <LibraryWorkspace
+                  <LibraryWorkspace
               photos={filtered}
               filter={filter}
               query={query}
@@ -6376,7 +6989,15 @@ export default function Home() {
               toggleSelection={toggleSelection}
               setWorkspace={setWorkspace}
               updateMany={updateMany}
-              gridSize={gridSize}
+                    gridSize={gridSize}
+                    cullPreferences={cullPreferences}
+                    setCullPreferences={(next) => {
+                      setCullPreferences(next);
+                      localStorage.setItem(
+                        "librelux-cull-preferences",
+                        JSON.stringify(next),
+                      );
+                    }}
             />
           ) : selected ? (
             <EditorCanvas
@@ -6397,6 +7018,7 @@ export default function Home() {
               maskTarget={maskTarget}
               maskTolerance={maskTolerance}
               maskFeather={maskFeather}
+              maskEdge={maskEdge}
               maskBrushSize={maskBrushSize}
               maskBrushFlow={maskBrushFlow}
               maskBrushDensity={maskBrushDensity}
@@ -6551,6 +7173,8 @@ export default function Home() {
                     setMaskTolerance={setMaskTolerance}
                     maskFeather={maskFeather}
                     setMaskFeather={setMaskFeather}
+                    maskEdge={maskEdge}
+                    setMaskEdge={setMaskEdge}
                     maskBrushSize={maskBrushSize}
                     setMaskBrushSize={setMaskBrushSize}
                     maskBrushFlow={maskBrushFlow}
@@ -6604,6 +7228,7 @@ export default function Home() {
                     saveSnapshot={saveDevelopSnapshot}
                     applySnapshot={applyDevelopSnapshot}
                     deleteSnapshot={deleteDevelopSnapshot}
+                    renameSnapshot={renameDevelopSnapshot}
                   />
                 ) : opticsMode === "pure" ? (
                   <PurePanels
@@ -6619,6 +7244,7 @@ export default function Home() {
                     exportOpticsProfiles={exportOpticsProfiles}
                     saveSensorDustMap={saveSensorDustMap}
                     applySensorDustMap={applySensorDustMap}
+                    detectSensorDust={detectSensorDust}
                     aiPack={aiPack}
                     aiStatus={aiStatus}
                     installAiPack={installAiPack}
@@ -6729,6 +7355,7 @@ export default function Home() {
         saveRecipe={saveCurrentExportRecipe}
         deleteRecipe={deleteExportRecipe}
         onExport={doExport}
+        onRenderDng={() => void doExport("dng")}
         onBatchExport={runBatchExport}
         onExportPackage={exportOriginalPackage}
       />
@@ -7114,6 +7741,43 @@ export default function Home() {
             </DialogDescription>
           </DialogHeader>
           <video ref={tetherVideoRef} muted playsInline />
+          <div className="tether-controls">
+            {(
+              [
+                ["exposureCompensation", "Exposure", "exposure"],
+                ["colorTemperature", "White balance", "whiteBalance"],
+                ["focusDistance", "Focus", "focus"],
+                ["zoom", "Zoom", "zoom"],
+              ] as const
+            ).map(([capability, label, stateKey]) => {
+              const range = tetherCapabilities[capability];
+              if (!range || range.min === undefined || range.max === undefined)
+                return null;
+              return (
+                <label key={capability}>
+                  <span>{label}</span>
+                  <input
+                    type="range"
+                    min={range.min}
+                    max={range.max}
+                    step={range.step ?? (range.max - range.min) / 100}
+                    value={tetherControls[stateKey]}
+                    onChange={(event) =>
+                      void setTetherConstraint(
+                        capability,
+                        Number(event.target.value),
+                      )
+                    }
+                  />
+                </label>
+              );
+            })}
+          </div>
+          <p className="panel-note">
+            Controls appear only when the connected camera and browser expose
+            them. USB/PTP-only camera settings still require the maker&apos;s
+            desktop bridge.
+          </p>
           <DialogFooter>
             <button onClick={stopTetheredCapture}>Disconnect</button>
             <button
@@ -7201,6 +7865,16 @@ export default function Home() {
               </strong>
             </>
           )}
+          <label className="meta-field">
+            <span>Music URL (optional)</span>
+            <input
+              type="url"
+              value={slideshowMusic}
+              placeholder="https://…"
+              onChange={(event) => setSlideshowMusic(event.target.value)}
+            />
+          </label>
+          {slideshowMusic && <audio controls src={slideshowMusic} />}
           <DialogFooter>
             <button
               onClick={() =>
@@ -7345,6 +8019,7 @@ function ExportDialog({
   saveRecipe,
   deleteRecipe,
   onExport,
+  onRenderDng,
   onBatchExport,
   onExportPackage,
 }: {
@@ -7410,6 +8085,7 @@ function ExportDialog({
   saveRecipe: () => void;
   deleteRecipe: (id: string) => void;
   onExport: () => void;
+  onRenderDng: () => void;
   onBatchExport: () => void;
   onExportPackage: () => void;
 }) {
@@ -7805,6 +8481,9 @@ function ExportDialog({
           </p>
         </Panel>
         <DialogFooter>
+          <button className="secondary-button" onClick={onRenderDng}>
+            Render to DNG
+          </button>
           <button className="secondary-button" onClick={onExportPackage}>
             Original + settings
           </button>
@@ -7836,6 +8515,8 @@ function LibraryWorkspace({
   setWorkspace,
   updateMany,
   gridSize,
+  cullPreferences,
+  setCullPreferences,
 }: {
   photos: RuntimePhoto[];
   filter:
@@ -7858,6 +8539,8 @@ function LibraryWorkspace({
   setWorkspace: (workspace: Workspace) => void;
   updateMany: (updater: (photo: RuntimePhoto) => RuntimePhoto) => void;
   gridSize: number;
+  cullPreferences: CullPreferences;
+  setCullPreferences: (value: CullPreferences) => void;
 }) {
   const candidates = selectedIds.length
     ? photos.filter((photo) => selectedIds.includes(photo.id))
@@ -7931,6 +8614,68 @@ function LibraryWorkspace({
         </div>
         <span>⌘/Ctrl-click adds to selection</span>
       </div>
+      {filter === "best" && (
+        <section className="cull-controls" aria-label="Assisted culling controls">
+          <label>
+            <span>Focus strictness</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={cullPreferences.focusStrictness}
+              onChange={(event) =>
+                setCullPreferences({
+                  ...cullPreferences,
+                  focusStrictness: Number(event.target.value),
+                })
+              }
+            />
+          </label>
+          <label>
+            <span>Exposure strictness</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={cullPreferences.exposureStrictness}
+              onChange={(event) =>
+                setCullPreferences({
+                  ...cullPreferences,
+                  exposureStrictness: Number(event.target.value),
+                })
+              }
+            />
+          </label>
+          <button
+            className={cullPreferences.protectShallowDepth ? "active" : ""}
+            onClick={() =>
+              setCullPreferences({
+                ...cullPreferences,
+                protectShallowDepth: !cullPreferences.protectShallowDepth,
+              })
+            }
+          >
+            Protect shallow depth of field
+          </button>
+          <button
+            onClick={() =>
+              updateMany((photo) => {
+                const decision = evaluateCull(
+                  detailedCullScores(photo.cull),
+                  cullPreferences,
+                );
+                return decision.decision === "select"
+                  ? { ...photo, flagged: true, rejected: false }
+                  : decision.decision === "reject"
+                    ? { ...photo, rejected: true, flagged: false }
+                    : photo;
+              })
+            }
+          >
+            Apply decisions to selected
+          </button>
+        </section>
+      )}
       {selectedIds.length > 0 && (
         <div className="bulk-bar">
           <strong>{selectedIds.length} selected</strong>
@@ -8044,7 +8789,11 @@ function LibraryWorkspace({
                 {photo.flagged && <Flag className="pick" />}
                 {photo.rejected && <X className="reject" />}
                 {photo.virtualOf && <Columns2 className="virtual" />}
-                {photo.stackId && <b className="stack-badge">Stack</b>}
+                {photo.stackId && (
+                  <b className="stack-badge">
+                    {photo.stackCover ? "Best in stack" : "Stack"}
+                  </b>
+                )}
                 <i style={{ background: labelColors[photo.label] }} />
               </div>
               <strong>{photo.metadata.title || photo.name}</strong>
@@ -8057,10 +8806,20 @@ function LibraryWorkspace({
                 {photo.folder} · {formatBytes(photo.size)}
               </span>
               {filter === "best" && (
-                <small className="cull-score">
-                  Focus {Math.round(photo.cull.focus)} · Exposure{" "}
-                  {Math.round(photo.cull.exposure)} · Faces {photo.cull.faces}
-                </small>
+                (() => {
+                  const decision = evaluateCull(
+                    detailedCullScores(photo.cull),
+                    cullPreferences,
+                  );
+                  return (
+                    <small className={`cull-score ${decision.decision}`}>
+                      {decision.score}/100 · {decision.reasons.join(" · ")}
+                      {photo.cull.faceScores?.length
+                        ? ` · Faces ${photo.cull.faceScores.map(Math.round).join("/")}`
+                        : ""}
+                    </small>
+                  );
+                })()
               )}
               <div className="stars">
                 {[1, 2, 3, 4, 5].map((n) => (
@@ -8094,6 +8853,7 @@ function EditorCanvas({
   maskTarget,
   maskTolerance,
   maskFeather,
+  maskEdge,
   maskBrushSize,
   maskBrushFlow,
   maskBrushDensity,
@@ -8131,6 +8891,7 @@ function EditorCanvas({
   maskTarget: MaskTarget | null;
   maskTolerance: number;
   maskFeather: number;
+  maskEdge: number;
   maskBrushSize: number;
   maskBrushFlow: number;
   maskBrushDensity: number;
@@ -8177,6 +8938,18 @@ function EditorCanvas({
     };
   }, [allowFullResolution, photo.id, photo.previewUrl, photo.url]);
   const [customCrop, setCustomCrop] = useState({ width: 4, height: 3 });
+  const [cropOutsideOpacity, setCropOutsideOpacity] = useState(42);
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("librelux-crop-outside-opacity"));
+    if (Number.isFinite(saved) && saved >= 0 && saved <= 90)
+      setCropOutsideOpacity(saved);
+  }, []);
+  useEffect(() => {
+    localStorage.setItem(
+      "librelux-crop-outside-opacity",
+      String(cropOutsideOpacity),
+    );
+  }, [cropOutsideOpacity]);
   const [guidedUpright, setGuidedUpright] = useState(false);
   const [guideStart, setGuideStart] = useState<{ x: number; y: number } | null>(
     null,
@@ -8336,13 +9109,20 @@ function EditorCanvas({
           subject: "AI subject",
           object: "AI object",
         };
+        const refinedDataUrl = await refineMaskDataUrl(
+          semantic.dataUrl,
+          maskEdge,
+          maskFeather,
+        );
         onMaskCreated({
           id: crypto.randomUUID(),
           name: `${names[maskTarget]} · ${semantic.labels.join(", ")}`,
           target: maskTarget,
-          dataUrl: semantic.dataUrl,
+          dataUrl: refinedDataUrl,
+          baseDataUrl: semantic.dataUrl,
           tolerance: maskTolerance,
           feather: maskFeather,
+          edge: maskEdge,
           visible: true,
           inverted: false,
           overlayColor: "#b6f36b",
@@ -8350,6 +9130,14 @@ function EditorCanvas({
           pinX: normalizedX,
           pinY: normalizedY,
           adjustments: { ...defaultLocal },
+          sourceFingerprint: editFingerprint({
+            cropTop: photo.adjustments.cropTop,
+            cropRight: photo.adjustments.cropRight,
+            cropBottom: photo.adjustments.cropBottom,
+            cropLeft: photo.adjustments.cropLeft,
+            rotation: photo.adjustments.rotation,
+            retouchCount: photo.retouchSpots.length,
+          }),
         });
         return;
       } catch {
@@ -8476,20 +9264,54 @@ function EditorCanvas({
           const topBias = Math.max(0, 1 - y / Math.max(1, height * 0.7));
           writePixel(y * width + x, 255 * Math.min(1, topBias + blueBias));
         }
+    } else if (landscapeMaskTargets.includes(maskTarget as LandscapeMaskTarget)) {
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const p = (y * width + x) * 4;
+          const r = pixels.data[p], g = pixels.data[p + 1], b = pixels.data[p + 2];
+          const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+          const nx = x / Math.max(1, width - 1);
+          const ny = y / Math.max(1, height - 1);
+          let confidence = 0;
+          if (maskTarget === "landscape-snow")
+            confidence = (luminance - 155) / 80 + (35 - chroma) / 90;
+          else if (maskTarget === "landscape-mountains")
+            confidence = 1 - Math.abs(ny - (0.42 + Math.abs(nx - 0.5) * 0.35)) * 4;
+          else if (maskTarget === "landscape-architecture") {
+            const right = x + 1 < width ? p + 4 : p;
+            const down = y + 1 < height ? p + width * 4 : p;
+            const edgeStrength =
+              Math.abs(r - pixels.data[right]) + Math.abs(r - pixels.data[down]);
+            confidence = edgeStrength / 90 + (chroma < 42 ? 0.25 : 0);
+          } else if (maskTarget === "landscape-vegetation")
+            confidence = (g - Math.max(r, b)) / 70 + (ny > 0.25 ? 0.25 : 0);
+          else if (maskTarget === "landscape-water")
+            confidence = (b + g * 0.45 - r * 1.15) / 150 + (ny > 0.35 ? 0.25 : 0);
+          else if (maskTarget === "landscape-natural-ground")
+            confidence = (ny - 0.42) * 1.8 + (r - b) / 130 + chroma / 260;
+          else
+            confidence = (ny - 0.48) * 2 + (48 - chroma) / 95;
+          writePixel(y * width + x, 255 * Math.max(0, Math.min(1, confidence)));
+        }
     } else if (
       maskTarget === "subject" ||
       maskTarget === "background" ||
       maskTarget === "person" ||
       maskTarget === "face" ||
       maskTarget === "eyes" ||
-      maskTarget === "teeth"
+      maskTarget === "teeth" ||
+      personMaskTargets.includes(maskTarget as PersonMaskTarget)
     ) {
       const centerX =
         maskTarget === "subject" || maskTarget === "background"
           ? 0.5
           : normalizedX;
       const centerY =
-        maskTarget === "face" || maskTarget === "eyes" || maskTarget === "teeth"
+        maskTarget === "face" ||
+        maskTarget === "eyes" ||
+        maskTarget === "teeth" ||
+        personMaskTargets.includes(maskTarget as PersonMaskTarget)
           ? normalizedY
           : 0.52;
       const radiusX =
@@ -8499,8 +9321,12 @@ function EditorCanvas({
             ? 0.13
             : maskTarget === "eyes"
               ? 0.12
-              : maskTarget === "teeth"
+              : maskTarget === "teeth" || maskTarget === "lips"
                 ? 0.06
+                : maskTarget === "eyebrows" || maskTarget === "eye-sclera"
+                  ? 0.12
+                  : maskTarget === "facial-hair"
+                    ? 0.1
                 : 0.32;
       const radiusY =
         maskTarget === "person"
@@ -8509,8 +9335,14 @@ function EditorCanvas({
             ? 0.17
             : maskTarget === "eyes"
               ? 0.035
-              : maskTarget === "teeth"
+              : maskTarget === "teeth" || maskTarget === "lips"
                 ? 0.025
+                : maskTarget === "eyebrows" || maskTarget === "eye-sclera"
+                  ? 0.035
+                  : maskTarget === "facial-hair"
+                    ? 0.09
+                    : maskTarget === "body-skin"
+                      ? 0.3
                 : 0.4;
       for (let y = 0; y < height; y++)
         for (let x = 0; x < width; x++) {
@@ -8583,15 +9415,12 @@ function EditorCanvas({
     raw.width = width;
     raw.height = height;
     raw.getContext("2d")?.putImageData(output, 0, 0);
-    const softened = document.createElement("canvas");
-    softened.width = width;
-    softened.height = height;
-    const softCtx = softened.getContext("2d");
-    if (!softCtx) return;
-    softCtx.filter = maskFeather
-      ? `blur(${Math.max(0.5, maskFeather * scale)}px)`
-      : "none";
-    softCtx.drawImage(raw, 0, 0);
+    const baseDataUrl = raw.toDataURL("image/png");
+    const refinedDataUrl = await refineMaskDataUrl(
+      baseDataUrl,
+      maskEdge,
+      maskFeather * scale,
+    );
     const names: Record<MaskTarget, string> = {
       brush: "Brush mask",
       point: "Magic selection",
@@ -8612,15 +9441,30 @@ function EditorCanvas({
       face: "Face",
       eyes: "Eyes",
       teeth: "Teeth",
+      "facial-skin": "Facial skin",
+      "body-skin": "Body skin",
+      eyebrows: "Eyebrows",
+      "eye-sclera": "Eye whites",
+      lips: "Lips",
+      "facial-hair": "Facial hair",
+      "landscape-snow": "Snow",
+      "landscape-mountains": "Mountains",
+      "landscape-architecture": "Architecture",
+      "landscape-vegetation": "Vegetation",
+      "landscape-water": "Water",
+      "landscape-natural-ground": "Natural ground",
+      "landscape-artificial-ground": "Artificial ground",
     };
     const id = crypto.randomUUID();
     onMaskCreated({
       id,
       name: names[maskTarget],
       target: maskTarget,
-      dataUrl: softened.toDataURL("image/png"),
+      dataUrl: refinedDataUrl,
+      baseDataUrl,
       tolerance: maskTolerance,
       feather: maskFeather,
+      edge: maskEdge,
       visible: true,
       inverted: false,
       overlayColor: "#b6f36b",
@@ -8628,6 +9472,14 @@ function EditorCanvas({
       pinX: normalizedX,
       pinY: normalizedY,
       adjustments: { ...defaultLocal },
+      sourceFingerprint: editFingerprint({
+        cropTop: photo.adjustments.cropTop,
+        cropRight: photo.adjustments.cropRight,
+        cropBottom: photo.adjustments.cropBottom,
+        cropLeft: photo.adjustments.cropLeft,
+        rotation: photo.adjustments.rotation,
+        retouchCount: photo.retouchSpots.length,
+      }),
     });
   };
   const handleCanvasClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -9010,6 +9862,32 @@ function EditorCanvas({
             className={`crop-overlay overlay-${cropOverlay} ${guidedUpright ? "guided" : ""}`}
             onClick={placeGuide}
           >
+            <i
+              className="crop-dim top"
+              style={{ height: `${a.cropTop}%`, opacity: cropOutsideOpacity / 100 }}
+            />
+            <i
+              className="crop-dim bottom"
+              style={{ height: `${a.cropBottom}%`, opacity: cropOutsideOpacity / 100 }}
+            />
+            <i
+              className="crop-dim left"
+              style={{
+                top: `${a.cropTop}%`,
+                bottom: `${a.cropBottom}%`,
+                width: `${a.cropLeft}%`,
+                opacity: cropOutsideOpacity / 100,
+              }}
+            />
+            <i
+              className="crop-dim right"
+              style={{
+                top: `${a.cropTop}%`,
+                bottom: `${a.cropBottom}%`,
+                width: `${a.cropRight}%`,
+                opacity: cropOutsideOpacity / 100,
+              }}
+            />
             <div className="crop-grid" />
             {(["top", "right", "bottom", "left"] as const).map((edge) => (
               <button
@@ -9116,6 +9994,19 @@ function EditorCanvas({
                   }
                 />
                 <span>{a.rotation.toFixed(1)}°</span>
+              </label>
+              <label>
+                Outside opacity{" "}
+                <input
+                  type="range"
+                  min="0"
+                  max="90"
+                  value={cropOutsideOpacity}
+                  onChange={(event) =>
+                    setCropOutsideOpacity(Number(event.target.value))
+                  }
+                />
+                <span>{cropOutsideOpacity}%</span>
               </label>
               <div className="crop-smart-actions">
                 <button onClick={() => void autoLevel()}>Auto level</button>
@@ -9229,6 +10120,7 @@ function LibraryInspector({
   const setMeta = (key: keyof PhotoMetadata, value: string | string[]) =>
     update((p) => ({ ...p, metadata: { ...p.metadata, [key]: value } }));
   const sidecarRef = useRef<HTMLInputElement>(null);
+  const acrSidecarRef = useRef<HTMLInputElement>(null);
   const relinkRef = useRef<HTMLInputElement>(null);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [reviewAuthor, setReviewAuthor] = useState(
@@ -9238,6 +10130,46 @@ function LibraryInspector({
         : localStorage.getItem("librelux-review-author") ?? "Local reviewer",
   );
   const [commentDraft, setCommentDraft] = useState("");
+  const [metadataTemplate, setMetadataTemplate] = useState<
+    Pick<PhotoMetadata, "creator" | "copyright" | "keywords"> | null
+  >(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return JSON.parse(localStorage.getItem("librelux-metadata-template") ?? "null");
+    } catch {
+      return null;
+    }
+  });
+  const [customLabels, setCustomLabels] = useState<LabelDefinition[]>(() => {
+    if (typeof window === "undefined") return defaultLabelDefinitions;
+    try {
+      return normalizeLabels(
+        JSON.parse(localStorage.getItem("librelux-custom-labels") ?? "null"),
+      );
+    } catch {
+      return defaultLabelDefinitions;
+    }
+  });
+  const updateCustomLabel = (
+    id: Exclude<Label, "none">,
+    patch: Partial<LabelDefinition>,
+  ) => {
+    const next = normalizeLabels(
+      customLabels.map((definition) =>
+        definition.id === id ? { ...definition, ...patch } : definition,
+      ),
+    );
+    setCustomLabels(next);
+    localStorage.setItem("librelux-custom-labels", JSON.stringify(next));
+  };
+  useEffect(() => {
+    customLabels.forEach((definition) =>
+      document.documentElement.style.setProperty(
+        `--label-${definition.id}`,
+        definition.color,
+      ),
+    );
+  }, [customLabels]);
   const keywordSuggestions = [
     "People > Portrait",
     "Places > Travel",
@@ -9326,6 +10258,58 @@ function LibraryInspector({
       return;
     }
   };
+  const exportAcrSidecar = () => {
+    const a = photo.adjustments;
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:Version="16.0" crs:ProcessVersion="15.4" crs:Exposure2012="${a.exposure}" crs:Contrast2012="${a.contrast}" crs:Highlights2012="${a.highlights}" crs:Shadows2012="${a.shadows}" crs:Whites2012="${a.whites}" crs:Blacks2012="${a.blacks}" crs:Temperature="${a.temperature}" crs:Tint="${a.tint}" crs:Texture="${a.texture}" crs:Clarity2012="${a.clarity}" crs:Dehaze="${a.dehaze}" crs:Vibrance="${a.vibrance}" crs:Saturation="${a.saturation}" /></rdf:RDF></x:xmpmeta>`;
+    const url = URL.createObjectURL(
+      new Blob([xml], { type: "application/rdf+xml" }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${photo.name.replace(/\.[^.]+$/, "")}.acr.xmp`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const importAcrSidecar = async (file?: File) => {
+    if (!file) return;
+    const documentXml = new DOMParser().parseFromString(
+      await file.text(),
+      "application/xml",
+    );
+    const description = documentXml.getElementsByTagNameNS(
+      "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+      "Description",
+    )[0];
+    if (!description) return;
+    const read = (name: string, fallback: number) => {
+      const value = Number(
+        description.getAttributeNS(
+          "http://ns.adobe.com/camera-raw-settings/1.0/",
+          name,
+        ),
+      );
+      return Number.isFinite(value) ? value : fallback;
+    };
+    update((current) => ({
+      ...current,
+      adjustments: {
+        ...current.adjustments,
+        exposure: read("Exposure2012", current.adjustments.exposure),
+        contrast: read("Contrast2012", current.adjustments.contrast),
+        highlights: read("Highlights2012", current.adjustments.highlights),
+        shadows: read("Shadows2012", current.adjustments.shadows),
+        whites: read("Whites2012", current.adjustments.whites),
+        blacks: read("Blacks2012", current.adjustments.blacks),
+        temperature: read("Temperature", current.adjustments.temperature),
+        tint: read("Tint", current.adjustments.tint),
+        texture: read("Texture", current.adjustments.texture),
+        clarity: read("Clarity2012", current.adjustments.clarity),
+        dehaze: read("Dehaze", current.adjustments.dehaze),
+        vibrance: read("Vibrance", current.adjustments.vibrance),
+        saturation: read("Saturation", current.adjustments.saturation),
+      },
+    }));
+  };
   return (
     <>
       <Panel title="Rating & labels">
@@ -9362,12 +10346,13 @@ function LibraryInspector({
           </button>
         </div>
         <div className="labels">
-          {(Object.keys(labelColors) as Label[])
-            .filter((l) => l !== "none")
-            .map((label) => (
+          {customLabels.map((definition) => {
+            const label = definition.id as Exclude<Label, "none">;
+            return (
               <button
                 key={label}
-                aria-label={`${label} label`}
+                aria-label={`${definition.name} label`}
+                title={definition.name}
                 className={photo.label === label ? "active" : ""}
                 onClick={() =>
                   update((p) => ({
@@ -9375,12 +10360,35 @@ function LibraryInspector({
                     label: p.label === label ? "none" : label,
                   }))
                 }
-                style={{ background: labelColors[label] }}
+                style={{ background: definition.color }}
               >
                 {photo.label === label && <Check />}
               </button>
-            ))}
+            );
+          })}
         </div>
+        <details className="label-editor">
+          <summary>Edit label names and colors</summary>
+          {customLabels.map((definition) => (
+            <label key={definition.id}>
+              <input
+                type="color"
+                value={definition.color}
+                aria-label={`${definition.name} color`}
+                onChange={(event) =>
+                  updateCustomLabel(definition.id as Exclude<Label, "none">, { color: event.target.value })
+                }
+              />
+              <input
+                value={definition.name}
+                aria-label={`${definition.id} label name`}
+                onChange={(event) =>
+                  updateCustomLabel(definition.id as Exclude<Label, "none">, { name: event.target.value })
+                }
+              />
+            </label>
+          ))}
+        </details>
       </Panel>
       <Panel
         title="Review"
@@ -9485,6 +10493,36 @@ function LibraryInspector({
         </div>
       </Panel>
       <Panel title="Description">
+        <div className="preset-manager-actions">
+          <button
+            onClick={() => {
+              const template = {
+                creator: photo.metadata.creator,
+                copyright: photo.metadata.copyright,
+                keywords: photo.metadata.keywords,
+              };
+              setMetadataTemplate(template);
+              localStorage.setItem(
+                "librelux-metadata-template",
+                JSON.stringify(template),
+              );
+            }}
+          >
+            Save metadata template
+          </button>
+          <button
+            disabled={!metadataTemplate}
+            onClick={() =>
+              metadataTemplate &&
+              update((current) => ({
+                ...current,
+                metadata: { ...current.metadata, ...metadataTemplate },
+              }))
+            }
+          >
+            Apply template
+          </button>
+        </div>
         <label className="meta-field">
           <span>Title</span>
           <input
@@ -9744,8 +10782,8 @@ function LibraryInspector({
       </Panel>
       <Panel title="XMP sidecar" open={false}>
         <p className="panel-note">
-          Move ratings, metadata, edits, and masks between LibreLux catalogs
-          without touching the original.
+          Catalog XMP keeps LibreLux metadata and masks. Camera Raw XMP keeps
+          standard develop values for compatible editors.
         </p>
         <div className="sidecar-actions">
           <button onClick={exportXmp}>
@@ -9753,6 +10791,12 @@ function LibraryInspector({
           </button>
           <button onClick={() => sidecarRef.current?.click()}>
             <FolderOpen /> Import XMP
+          </button>
+          <button onClick={exportAcrSidecar}>
+            <Download /> Export Camera Raw XMP
+          </button>
+          <button onClick={() => acrSidecarRef.current?.click()}>
+            <FolderOpen /> Import Camera Raw XMP
           </button>
         </div>
         <input
@@ -9762,6 +10806,16 @@ function LibraryInspector({
           accept=".xmp,application/rdf+xml,application/xml,text/xml"
           onChange={(event) => {
             void importXmp(event.target.files?.[0]);
+            event.currentTarget.value = "";
+          }}
+        />
+        <input
+          ref={acrSidecarRef}
+          hidden
+          type="file"
+          accept=".xmp,application/rdf+xml,application/xml,text/xml"
+          onChange={(event) => {
+            void importAcrSidecar(event.target.files?.[0]);
             event.currentTarget.value = "";
           }}
         />
@@ -9784,6 +10838,8 @@ function DevelopPanels({
   setMaskTolerance,
   maskFeather,
   setMaskFeather,
+  maskEdge,
+  setMaskEdge,
   maskBrushSize,
   setMaskBrushSize,
   maskBrushFlow,
@@ -9831,6 +10887,7 @@ function DevelopPanels({
   saveSnapshot,
   applySnapshot,
   deleteSnapshot,
+  renameSnapshot,
 }: {
   photo: RuntimePhoto;
   setAdjustment: (k: keyof Adjustments, v: number) => void;
@@ -9851,6 +10908,8 @@ function DevelopPanels({
   setMaskTolerance: (value: number) => void;
   maskFeather: number;
   setMaskFeather: (value: number) => void;
+  maskEdge: number;
+  setMaskEdge: (value: number) => void;
   maskBrushSize: number;
   setMaskBrushSize: (value: number) => void;
   maskBrushFlow: number;
@@ -9898,12 +10957,56 @@ function DevelopPanels({
   saveSnapshot: () => void;
   applySnapshot: (snapshot: DevelopSnapshot) => void;
   deleteSnapshot: (id: string) => void;
+  renameSnapshot: (id: string, name: string) => void;
 }) {
   const a = photo.adjustments;
   const selectedMask = photo.masks.find((mask) => mask.id === selectedMaskId);
   const [combineMaskId, setCombineMaskId] = useState("");
   const [presetQuery, setPresetQuery] = useState("");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const maskRefineRequest = useRef(0);
+  const currentMaskFingerprint = editFingerprint({
+    cropTop: photo.adjustments.cropTop,
+    cropRight: photo.adjustments.cropRight,
+    cropBottom: photo.adjustments.cropBottom,
+    cropLeft: photo.adjustments.cropLeft,
+    rotation: photo.adjustments.rotation,
+    retouchCount: photo.retouchSpots.length,
+  });
+  const setSavedMaskRefinement = (edge: number, feather: number) => {
+    if (!selectedMask) return;
+    const request = ++maskRefineRequest.current;
+    void refineMaskDataUrl(
+      selectedMask.baseDataUrl ?? selectedMask.dataUrl,
+      edge,
+      feather,
+    ).then((dataUrl) => {
+      if (request !== maskRefineRequest.current) return;
+      updateMask(selectedMask.id, (mask) => ({
+        ...mask,
+        dataUrl,
+        baseDataUrl: mask.baseDataUrl ?? mask.dataUrl,
+        edge,
+        feather,
+      }));
+    });
+  };
+  const updateAllMasks = async () => {
+    await Promise.all(
+      photo.masks.map(async (mask) => {
+        const dataUrl = await refineMaskDataUrl(
+          mask.baseDataUrl ?? mask.dataUrl,
+          mask.edge,
+          mask.feather,
+        );
+        updateMask(mask.id, (current) => ({
+          ...current,
+          dataUrl,
+          sourceFingerprint: currentMaskFingerprint,
+        }));
+      }),
+    );
+  };
   const visibleUserPresets = userPresets.filter(
     (preset) =>
       (!favoritesOnly || preset.favorite) &&
@@ -10130,6 +11233,14 @@ function DevelopPanels({
                 />
                 <span>{snapshot.name}</span>
               </button>
+              <input
+                className="snapshot-name"
+                value={snapshot.name}
+                aria-label={`Rename ${snapshot.name}`}
+                onChange={(event) =>
+                  renameSnapshot(snapshot.id, event.target.value)
+                }
+              />
               <button
                 aria-label={`Delete ${snapshot.name}`}
                 onClick={() => deleteSnapshot(snapshot.id)}
@@ -10823,12 +11934,31 @@ function DevelopPanels({
           onChange={(v) => setAdjustment("volumeDeform", v)}
         />
         <AdjustSlider
-          label="Window glare reduction"
+          label="Reflection isolate / suppress"
           value={a.glareReduction}
-          min={0}
+          min={-100}
           max={100}
           onChange={(v) => setAdjustment("glareReduction", v)}
         />
+        <div className="preset-manager-actions" aria-label="Reflection quality">
+          {([
+            [1, "Preview"],
+            [2, "Balanced"],
+            [3, "Precise"],
+          ] as const).map(([quality, label]) => (
+            <button
+              key={quality}
+              className={a.reflectionQuality === quality ? "active" : ""}
+              onClick={() => setAdjustment("reflectionQuality", quality)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="panel-note">
+          Negative values isolate reflections for inspection; positive values
+          suppress reflective glare while preserving local color.
+        </p>
         <AdjustSlider
           label="Sensor dust cleanup"
           value={a.dustRemoval}
@@ -10938,6 +12068,32 @@ function DevelopPanels({
               </summary>
               {spot.mode !== "redEye" && (
                 <>
+                  {(spot.mode === "remove" ||
+                    spot.mode === "generativeRemove") && (
+                    <div className="preset-manager-actions">
+                      {[1, 2, 3].map((variation) => (
+                        <button
+                          key={variation}
+                          onClick={() => {
+                            const angle = variation * 2.094 + spot.x * Math.PI;
+                            const distance = Math.max(0.025, spot.size / 180);
+                            updateRetouchSpot(spot.id, {
+                              sourceX: Math.max(
+                                0,
+                                Math.min(1, spot.x + Math.cos(angle) * distance),
+                              ),
+                              sourceY: Math.max(
+                                0,
+                                Math.min(1, spot.y + Math.sin(angle) * distance),
+                              ),
+                            });
+                          }}
+                        >
+                          Variation {variation}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <AdjustSlider
                     label="Source X"
                     value={Math.round(spot.sourceX * 100)}
@@ -11029,6 +12185,34 @@ function DevelopPanels({
             </button>
           ))}
         </div>
+        <details className="mask-target-group">
+          <summary>Landscape parts</summary>
+          <div className="mask-tools compact">
+            {landscapeMaskTargets.map((value) => (
+              <button
+                className={maskTarget === value ? "active" : ""}
+                key={value}
+                onClick={() => setMaskTarget(maskTarget === value ? null : value)}
+              >
+                {value.replace("landscape-", "").replaceAll("-", " ")}
+              </button>
+            ))}
+          </div>
+        </details>
+        <details className="mask-target-group">
+          <summary>Person details</summary>
+          <div className="mask-tools compact">
+            {personMaskTargets.map((value) => (
+              <button
+                className={maskTarget === value ? "active" : ""}
+                key={value}
+                onClick={() => setMaskTarget(maskTarget === value ? null : value)}
+              >
+                {value.replaceAll("-", " ")}
+              </button>
+            ))}
+          </div>
+        </details>
         {maskTarget === "brush" && (
           <div className="brush-mask-controls">
             <AdjustSlider
@@ -11079,9 +12263,21 @@ function DevelopPanels({
           resetValue={6}
           onChange={setMaskFeather}
         />
+        <AdjustSlider
+          label="Expand / contract edge"
+          value={maskEdge}
+          min={-100}
+          max={100}
+          onChange={setMaskEdge}
+        />
         {maskTarget && (
           <button className="cancel-mask" onClick={() => setMaskTarget(null)}>
             Cancel selection
+          </button>
+        )}
+        {!!photo.masks.length && (
+          <button className="mask-batch" onClick={() => void updateAllMasks()}>
+            Update all masks
           </button>
         )}
         <div className="mask-list">
@@ -11093,7 +12289,14 @@ function DevelopPanels({
             >
               <i className={`mask-chip ${mask.target}`} />
               <span>{mask.name}</span>
-              <em>{mask.visible ? "Visible" : "Hidden"}</em>
+              <em>
+                {mask.sourceFingerprint &&
+                mask.sourceFingerprint !== currentMaskFingerprint
+                  ? "Needs update"
+                  : mask.visible
+                    ? "Visible"
+                    : "Hidden"}
+              </em>
             </button>
           ))}
         </div>
@@ -11172,6 +12375,25 @@ function DevelopPanels({
                   ...mask,
                   overlayOpacity: value,
                 }))
+              }
+            />
+            <AdjustSlider
+              label="Mask edge"
+              value={selectedMask.edge}
+              min={-100}
+              max={100}
+              onChange={(value) =>
+                setSavedMaskRefinement(value, selectedMask.feather)
+              }
+            />
+            <AdjustSlider
+              label="Mask feather"
+              value={selectedMask.feather}
+              min={0}
+              max={30}
+              resetValue={6}
+              onChange={(value) =>
+                setSavedMaskRefinement(selectedMask.edge, value)
               }
             />
             {photo.masks.length > 1 && (
@@ -11301,6 +12523,7 @@ function DevelopPanels({
                 ["dehaze", "Dehaze", -100, 100, 1],
                 ["sharpness", "Sharpness", -100, 100, 1],
                 ["noise", "Noise reduction", 0, 100, 1],
+                ["moire", "Moiré / false color", 0, 100, 1],
                 ["curveShadows", "Curve shadows", -100, 100, 1],
                 ["curveMidtones", "Curve midtones", -100, 100, 1],
                 ["curveHighlights", "Curve highlights", -100, 100, 1],
@@ -11338,6 +12561,7 @@ function PurePanels({
   exportOpticsProfiles,
   saveSensorDustMap,
   applySensorDustMap,
+  detectSensorDust,
   aiPack,
   aiStatus,
   installAiPack,
@@ -11359,6 +12583,7 @@ function PurePanels({
   exportOpticsProfiles: () => void;
   saveSensorDustMap: () => Promise<void>;
   applySensorDustMap: () => Promise<void>;
+  detectSensorDust: () => Promise<void>;
   aiPack: { restore: boolean; segment: boolean };
   aiStatus: string;
   installAiPack: (kind: "restore" | "segment" | "all") => Promise<void>;
@@ -11395,6 +12620,29 @@ function PurePanels({
         </button>
       </div>
       <Panel title="Processing quality" badge="Local">
+        <div className="preset-manager-actions">
+          <button
+            onClick={() => {
+              const iso = Math.max(50, Number(photo.metadata.iso) || 100);
+              const strength = Math.min(100, Math.max(0, Math.log2(iso / 100) * 13));
+              setAdjustment("noise", Math.round(strength * 0.72));
+              setAdjustment("colorNoise", Math.round(strength * 0.88));
+              setAdjustment("sharpDetail", Math.round(48 - strength * 0.2));
+            }}
+          >
+            ISO-adaptive cleanup
+          </button>
+          <button
+            disabled={!photo.rawInfo}
+            onClick={() => {
+              setAdjustment("highlightRecovery", 72);
+              setAdjustment("shadows", 28);
+              setAdjustment("noise", Math.max(a.noise, 18));
+            }}
+          >
+            Dual-gain RAW recovery
+          </button>
+        </div>
         <div className="recipe-buttons">
           <button
             className={
@@ -11500,6 +12748,9 @@ function PurePanels({
           <button onClick={() => void applySensorDustMap()}>
             Apply camera map
           </button>
+          <button onClick={() => void detectSensorDust()}>
+            Find dust for review
+          </button>
         </div>
       </Panel>
       <Panel title="Optics profile" badge="Auto">
@@ -11531,7 +12782,19 @@ function PurePanels({
             >
               <strong>{profile.lens}</strong>
               <span>
-                {profile.camera} · v{profile.version} · {profile.source}
+                {profile.camera} · v{profile.version} · {profile.source} · {Math.round(
+                  (profile.camera.toLowerCase() === photo.metadata.camera.toLowerCase()
+                    ? 0.55
+                    : profileQuery.includes(profile.camera.toLowerCase())
+                      ? 0.35
+                      : 0.12) *
+                    100 +
+                    (profile.lens.toLowerCase() === photo.metadata.lens.toLowerCase()
+                      ? 45
+                      : profileQuery.includes(profile.lens.toLowerCase())
+                        ? 30
+                        : 8),
+                )}% match
               </span>
             </button>
           ))}
@@ -11833,6 +13096,30 @@ function PurePanels({
           min={0}
           max={20}
           onChange={(v) => setAdjustment("lensBlur", v)}
+        />
+        <AdjustSlider
+          label="Focus plane"
+          value={a.lensBlurFocus}
+          min={0}
+          max={100}
+          resetValue={50}
+          onChange={(v) => setAdjustment("lensBlurFocus", v)}
+        />
+        <AdjustSlider
+          label="Bokeh character"
+          value={a.lensBlurBokeh}
+          min={0}
+          max={100}
+          resetValue={50}
+          onChange={(v) => setAdjustment("lensBlurBokeh", v)}
+        />
+        <AdjustSlider
+          label="Bokeh highlights"
+          value={a.lensBlurHighlights}
+          min={0}
+          max={100}
+          resetValue={20}
+          onChange={(v) => setAdjustment("lensBlurHighlights", v)}
         />
         <p className="panel-note">
           The preview uses a memory-safe proxy. Export runs from the original at

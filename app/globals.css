@@ -2003,6 +2003,80 @@ button {
     max-height: calc(100vh - 250px);
   }
 }
+
+.mask-target-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 6px 0;
+  padding: 0 8px 8px;
+}
+.mask-target-group summary,
+.label-editor summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 8px 0;
+}
+.mask-tools.compact { gap: 4px; }
+.label-editor { margin-top: 8px; }
+.label-editor label {
+  align-items: center;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  margin: 5px 0;
+}
+.label-editor input[type="color"] {
+  background: transparent;
+  border: 0;
+  height: 26px;
+  padding: 0;
+  width: 28px;
+}
+.snapshot-name {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 10px;
+  margin: 3px;
+  min-width: 0;
+  padding: 4px 5px;
+  width: calc(100% - 6px);
+}
+.cull-controls {
+  align-items: center;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 14px 10px;
+  padding: 9px;
+}
+.cull-controls label {
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+}
+.cull-controls button { min-height: 30px; }
+.cull-score.select { color: var(--accent); }
+.cull-score.review { color: #e8ba63; }
+.cull-score.reject { color: #e77979; }
+.tether-controls {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+.tether-controls label {
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
+}
+@media (max-width: 920px) {
+  .cull-controls { grid-template-columns: 1fr 1fr; }
+}
 .text-tool {
   height: 28px;
   border: 0;
@@ -2154,6 +2228,22 @@ button {
   box-shadow: 0 0 0 9999px #0008;
   pointer-events: none;
 }
+.crop-dim {
+  position: absolute;
+  z-index: 1;
+  display: block;
+  background: #000;
+  pointer-events: none;
+}
+.crop-dim.top,
+.crop-dim.bottom {
+  left: 0;
+  right: 0;
+}
+.crop-dim.top { top: 0; }
+.crop-dim.bottom { bottom: 0; }
+.crop-dim.left { left: 0; }
+.crop-dim.right { right: 0; }
 .crop-grid {
   position: absolute;
   inset: 0;
@@ -2177,6 +2267,7 @@ button {
       transparent 66.8%
     );
   border: 1px solid #fff;
+  z-index: 2;
 }
 .crop-overlay nav {
   pointer-events: auto;
