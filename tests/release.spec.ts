@@ -127,3 +127,31 @@ test("album tools stay separated inside the narrow catalog rail", async ({ page 
     }
   expect(errors).toEqual([]);
 });
+
+test("interactive accents use the LibreLux logo palette", async ({ page }) => {
+  await openReady(page);
+  const palette = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const primary = getComputedStyle(document.querySelector(".primary-button")!);
+    const activeTab = getComputedStyle(
+      document.querySelector('.workspace-tabs button[aria-selected="true"]')!,
+      "::after",
+    );
+    return {
+      mint: root.getPropertyValue("--brand-mint").trim(),
+      teal: root.getPropertyValue("--brand-teal").trim(),
+      blue: root.getPropertyValue("--brand-blue").trim(),
+      ice: root.getPropertyValue("--brand-ice").trim(),
+      primaryBackground: primary.backgroundImage,
+      activeTabBackground: activeTab.backgroundImage,
+    };
+  });
+  expect(palette).toMatchObject({
+    mint: "#43dba4",
+    teal: "#35c5ad",
+    blue: "#269fbf",
+    ice: "#d7ffeb",
+  });
+  expect(palette.primaryBackground).toContain("linear-gradient");
+  expect(palette.activeTabBackground).toContain("linear-gradient");
+});

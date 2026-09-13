@@ -2634,7 +2634,7 @@ export default function Home() {
                   edge: mask.edge ?? 0,
                   visible: mask.visible ?? true,
                   inverted: mask.inverted ?? false,
-                  overlayColor: mask.overlayColor ?? "#b6f36b",
+                  overlayColor: mask.overlayColor ?? "#43dba4",
                   overlayOpacity: mask.overlayOpacity ?? 48,
                   pinX: mask.pinX ?? 0.5,
                   pinY: mask.pinY ?? 0.5,
@@ -9668,7 +9668,7 @@ function EditorCanvas({
           edge: maskEdge,
           visible: true,
           inverted: false,
-          overlayColor: "#b6f36b",
+          overlayColor: "#43dba4",
           overlayOpacity: 48,
           pinX: normalizedX,
           pinY: normalizedY,
@@ -10010,7 +10010,7 @@ function EditorCanvas({
       edge: maskEdge,
       visible: true,
       inverted: false,
-      overlayColor: "#b6f36b",
+      overlayColor: "#43dba4",
       overlayOpacity: 48,
       pinX: normalizedX,
       pinY: normalizedY,
@@ -10789,7 +10789,7 @@ function LibraryInspector({
             ...mask,
             visible: mask.visible ?? true,
             inverted: mask.inverted ?? false,
-            overlayColor: mask.overlayColor ?? "#b6f36b",
+            overlayColor: mask.overlayColor ?? "#43dba4",
             overlayOpacity: mask.overlayOpacity ?? 48,
             pinX: mask.pinX ?? 0.5,
             pinY: mask.pinY ?? 0.5,
@@ -12888,7 +12888,7 @@ function DevelopPanels({
             </div>
             <div className="mask-overlay-controls">
               <span>Overlay</span>
-              {["#b6f36b", "#ff5b68", "#65b8ff", "#f0c45a", "#c887ff"].map(
+              {["#43dba4", "#ff5b68", "#65b8ff", "#f0c45a", "#c887ff"].map(
                 (color) => (
                   <button
                     key={color}
